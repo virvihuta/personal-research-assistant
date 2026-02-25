@@ -18,7 +18,7 @@ Tool schemas are defined using **Pydantic models** — no hand-written JSON. The
 
 ## Stack
 
-- **OpenAI API** — `gpt-4o-mini` for completions and tool calling
+- **OpenAI API** — `gpt-5-nano` for completions and tool calling
 - **Pydantic** — schema generation for tool definitions
 - **Gradio** — browser-based chat UI
 - **python-dotenv** — environment variable management
