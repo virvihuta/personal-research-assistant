@@ -1,5 +1,5 @@
 import { ModelBackend } from "./model-backend.js";
-import { STUB_TRANSFORMER_GRAPH } from "./stub-scene-graph.js";
+import { findTemplate, getTemplate } from "../templates/index.js";
 
 // Small artificial delay so loading states in the UI are exercised even
 // before a real network-backed backend exists.
@@ -9,8 +9,9 @@ const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Offline backend for developing and testing the pipeline shape. No network,
- * no API keys. Schema-constrained requests get the canned transformer scene
- * graph; freeform requests get a canned string.
+ * no API keys. Schema-constrained requests return a layout template's graph
+ * (matched from the prompt, defaulting to the transformer); freeform requests
+ * get a canned string.
  */
 export class StubBackend extends ModelBackend {
   get name() {
@@ -21,9 +22,10 @@ export class StubBackend extends ModelBackend {
     await delay(STUB_LATENCY_MS);
 
     if (options.schema) {
+      const template = findTemplate(prompt) || getTemplate("transformer");
       return {
         text: null,
-        data: structuredClone(STUB_TRANSFORMER_GRAPH),
+        data: template.build(),
         backend: this.name
       };
     }

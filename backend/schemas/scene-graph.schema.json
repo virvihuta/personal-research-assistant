@@ -22,7 +22,7 @@
   "$defs": {
     "node": {
       "type": "object",
-      "required": ["id", "label", "position", "size", "color"],
+      "required": ["id", "label", "description", "position", "size", "color"],
       "additionalProperties": false,
       "properties": {
         "id": {
@@ -31,6 +31,12 @@
           "description": "Stable kebab-case identifier. Voice navigation resolves to these."
         },
         "label": { "type": "string", "minLength": 1 },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500,
+          "description": "1-2 plain-language sentences. Used as grounding context for scoped LLM explanations, not just display."
+        },
         "position": {
           "type": "object",
           "required": ["x", "y", "z"],
@@ -48,6 +54,10 @@
           "description": "Cluster radius in layout units; also weights how many particles the node receives."
         },
         "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "shape": {
+          "enum": ["ball", "slab"],
+          "description": "Cluster silhouette: default fuzzy ball, or a wide flat slab (used for stacked layer bands). Only meaningful on leaf nodes — parents render as their children."
+        },
         "parent": {
           "type": ["string", "null"],
           "description": "Id of the containing node, or null for top-level nodes. Drives zoom/focus subtree resolution."

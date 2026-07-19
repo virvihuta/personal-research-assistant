@@ -13,11 +13,13 @@
 const NODE_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 const EDGE_TYPES = ["flow", "residual", "reference"];
+const NODE_SHAPES = ["ball", "slab"];
 const MAX_NODES = 64;
 const MAX_NODE_SIZE = 10;
+const MAX_DESCRIPTION_LENGTH = 500;
 
 const GRAPH_KEYS = new Set(["id", "label", "nodes", "edges"]);
-const NODE_KEYS = new Set(["id", "label", "position", "size", "color", "parent"]);
+const NODE_KEYS = new Set(["id", "label", "description", "position", "size", "color", "shape", "parent"]);
 const EDGE_KEYS = new Set(["from", "to", "type"]);
 
 function isPlainObject(value) {
@@ -45,6 +47,9 @@ function validateNode(node, index, errors) {
   if (typeof node.label !== "string" || node.label.length === 0) {
     errors.push(`${where}.label: must be a non-empty string`);
   }
+  if (typeof node.description !== "string" || node.description.length === 0 || node.description.length > MAX_DESCRIPTION_LENGTH) {
+    errors.push(`${where}.description: must be a non-empty string of at most ${MAX_DESCRIPTION_LENGTH} characters`);
+  }
 
   if (!isPlainObject(node.position)) {
     errors.push(`${where}.position: must be an object with numeric x, y, z`);
@@ -62,6 +67,9 @@ function validateNode(node, index, errors) {
   }
   if (typeof node.color !== "string" || !COLOR_PATTERN.test(node.color)) {
     errors.push(`${where}.color: must be a #rrggbb hex string (got ${JSON.stringify(node.color)})`);
+  }
+  if (node.shape !== undefined && !NODE_SHAPES.includes(node.shape)) {
+    errors.push(`${where}.shape: must be one of ${NODE_SHAPES.join(", ")} (got ${JSON.stringify(node.shape)})`);
   }
   if (node.parent !== undefined && node.parent !== null && typeof node.parent !== "string") {
     errors.push(`${where}.parent: must be a node id string or null`);
