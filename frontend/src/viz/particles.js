@@ -27,6 +27,12 @@ const DEFAULT_CAMERA_POS = { x: 0, y: 5, z: 58 };
 const FOCUS_VIEW_DIR = { x: 0, y: 0.25, z: 1 }; // normalized at use
 const CAMERA_TWEEN_MS = 1400;
 
+// Brightness by hierarchy depth relative to the focused node (Overview acts
+// as a virtual root one level above the top-level clusters). Two levels of
+// structure render vivid; deeper detail sinks into gray until the user zooms
+// toward it. Index = relative depth, last entry applies beyond the array.
+const FOCUS_WEIGHT_BY_REL_DEPTH = [1, 1, 1, 0.45, 0.35, 0.28];
+
 let targets = null; // preset arrays + "diagram", filled in initViz/loadDiagram
 let diagramColors = null;
 
@@ -34,6 +40,7 @@ let diagramColors = null;
 let currentGraph = null;
 let nodeById = new Map();
 let childrenByParent = new Map();
+let nodeDepth = new Map();
 let diagramNodeRanges = new Map();
 let diagramEdgeRanges = [];
 let focusedNodeId = null;
@@ -140,13 +147,26 @@ function beginMorphTo(targetArray) {
 
 export function setShape(name) {
   if (!(name in targets) || !targets[name]) return false;
-  if (name !== "diagram" && focusedNodeId !== null) clearFocus();
+  const leavingFocus = name !== "diagram" && focusedNodeId !== null;
   currentShape = name;
   beginMorphTo(targets[name]);
   if (name === "diagram") {
     particleGeometry.attributes.color.array.set(diagramColors);
     particleGeometry.attributes.color.needsUpdate = true;
+    // The diagram always renders with depth-weighted defocus, even at overview.
+    applyFocusWeights(focusedNodeId);
+    defocusTarget = 1;
   } else {
+    if (leavingFocus) {
+      focusedNodeId = null;
+      startCameraTween(
+        new THREE.Vector3(DEFAULT_CAMERA_POS.x, DEFAULT_CAMERA_POS.y, DEFAULT_CAMERA_POS.z),
+        new THREE.Vector3(0, 0, 0)
+      );
+    }
+    particleGeometry.attributes.focus.array.fill(1);
+    particleGeometry.attributes.focus.needsUpdate = true;
+    defocusTarget = 0;
     fillFlatColor(pickedColor);
   }
   return true;
@@ -173,15 +193,48 @@ export function loadDiagram(graph) {
       childrenByParent.get(n.parent).push(n);
     }
   }
+  nodeDepth = new Map();
+  for (const n of graph.nodes) {
+    let depth = 0;
+    let current = n;
+    while (current.parent != null) {
+      depth++;
+      current = nodeById.get(current.parent);
+    }
+    nodeDepth.set(n.id, depth);
+  }
 
-  // Regenerating while focused: reset focus state for the new graph.
-  resetFocusAttribute();
+  // Regenerating while focused: back to the overview weighting.
   focusedNodeId = null;
-  defocusTarget = 0;
+  applyFocusWeights(null);
 }
 
-function resetFocusAttribute() {
-  particleGeometry.attributes.focus.array.fill(1);
+function weightForRelDepth(rel) {
+  const idx = Math.min(Math.max(rel, 0), FOCUS_WEIGHT_BY_REL_DEPTH.length - 1);
+  return FOCUS_WEIGHT_BY_REL_DEPTH[idx];
+}
+
+// Fill the per-particle focus attribute for a focus target (null = overview,
+// treated as a virtual root so top-level clusters sit at relative depth 1).
+// Nodes outside the focused subtree get 0; edges take the dimmer endpoint.
+function applyFocusWeights(focusId) {
+  const subtree = focusId ? collectSubtree(focusId) : null;
+  const focusDepth = focusId ? nodeDepth.get(focusId) : -1;
+
+  const weightOf = (id) => {
+    if (subtree && !subtree.has(id)) return 0;
+    return weightForRelDepth(nodeDepth.get(id) - focusDepth);
+  };
+
+  const focusArr = particleGeometry.attributes.focus.array;
+  focusArr.fill(0);
+  for (const [id, range] of diagramNodeRanges) {
+    focusArr.fill(weightOf(id), range.start, range.start + range.count);
+  }
+  for (const er of diagramEdgeRanges) {
+    const w = Math.min(weightOf(er.from), weightOf(er.to));
+    focusArr.fill(w, er.start, er.start + er.count);
+  }
   particleGeometry.attributes.focus.needsUpdate = true;
 }
 
@@ -219,19 +272,7 @@ export function focusNode(nodeId) {
   if (!node) return false;
 
   const subtree = collectSubtree(nodeId);
-
-  const focusArr = particleGeometry.attributes.focus.array;
-  focusArr.fill(0);
-  for (const id of subtree) {
-    const range = diagramNodeRanges.get(id);
-    if (range) focusArr.fill(1, range.start, range.start + range.count);
-  }
-  for (const er of diagramEdgeRanges) {
-    if (subtree.has(er.from) && subtree.has(er.to)) {
-      focusArr.fill(1, er.start, er.start + er.count);
-    }
-  }
-  particleGeometry.attributes.focus.needsUpdate = true;
+  applyFocusWeights(nodeId);
   defocusTarget = 1;
 
   let radius = node.size;
@@ -259,9 +300,11 @@ export function focusNode(nodeId) {
 }
 
 export function clearFocus() {
-  resetFocusAttribute();
-  defocusTarget = 0;
   focusedNodeId = null;
+  // Overview keeps the depth-weighted dimming — deep detail stays subdued
+  // until the user zooms toward it.
+  applyFocusWeights(null);
+  defocusTarget = currentShape === "diagram" ? 1 : 0;
   startCameraTween(
     new THREE.Vector3(DEFAULT_CAMERA_POS.x, DEFAULT_CAMERA_POS.y, DEFAULT_CAMERA_POS.z),
     new THREE.Vector3(0, 0, 0)
