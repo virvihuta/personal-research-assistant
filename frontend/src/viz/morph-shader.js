@@ -12,11 +12,14 @@ export const MORPH_VERTEX_SHADER = /* glsl */ `
   uniform float uSize;
   uniform float uPointScale;
   attribute vec3 targetPosition;
+  attribute float focus;
   varying vec3 vColor;
+  varying float vFocus;
   #include <fog_pars_vertex>
 
   void main() {
     vColor = color;
+    vFocus = focus;
     vec3 morphed = mix(position, targetPosition, uMix) * uScale;
     vec4 mvPosition = modelViewMatrix * vec4(morphed, 1.0);
     gl_PointSize = uSize * (uPointScale / -mvPosition.z);
@@ -25,13 +28,22 @@ export const MORPH_VERTEX_SHADER = /* glsl */ `
   }
 `;
 
+// uDefocus fades/desaturates particles whose focus attribute is 0 (outside
+// the focused subtree). At uDefocus=0 the attribute is irrelevant, so
+// geometries without a focus attribute (presets, benchmark) render unchanged.
 export const MORPH_FRAGMENT_SHADER = /* glsl */ `
   uniform float uOpacity;
+  uniform float uDefocus;
   varying vec3 vColor;
+  varying float vFocus;
   #include <fog_pars_fragment>
 
   void main() {
-    gl_FragColor = vec4(vColor, uOpacity);
+    float dim = uDefocus * (1.0 - vFocus);
+    vec3 grayed = vec3(dot(vColor, vec3(0.299, 0.587, 0.114))) * 0.35;
+    vec3 color = mix(vColor, grayed, dim);
+    float alpha = uOpacity * mix(1.0, 0.3, dim);
+    gl_FragColor = vec4(color, alpha);
     #include <fog_fragment>
   }
 `;
@@ -44,7 +56,8 @@ export function createMorphMaterial({ size = 0.34, opacity = 0.95, fog = false }
       uScale: { value: 1.0 },
       uSize: { value: size },
       uPointScale: { value: 1.0 },
-      uOpacity: { value: opacity }
+      uOpacity: { value: opacity },
+      uDefocus: { value: 0.0 }
     }
   ]);
 

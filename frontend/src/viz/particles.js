@@ -6,9 +6,9 @@ import { createMorphMaterial } from "./morph-shader.js";
 // the classic CDN scripts loaded in index.html.
 //
 // Morphing runs on the GPU (see morph-shader.js): per frame the CPU only
-// advances uMix/uScale uniforms. The one remaining per-particle CPU pass is
-// beginMorphTo(), which runs once per shape *switch* to bake the in-flight
-// interpolated position into the start attribute before retargeting.
+// advances uMix/uScale uniforms. Per-particle CPU passes happen only on
+// discrete events: shape switches (beginMorphTo bake) and focus changes
+// (focus attribute refill).
 
 let scene, camera, renderer, controls;
 let particleGeometry, particleSystem, morphUniforms;
@@ -23,8 +23,23 @@ const BASE_MODEL_SCALE = 1.75;
 // for both the morph mix and the scale uniform so the motion feels unchanged.
 const MORPH_EASE = 0.08;
 
+const DEFAULT_CAMERA_POS = { x: 0, y: 5, z: 58 };
+const FOCUS_VIEW_DIR = { x: 0, y: 0.25, z: 1 }; // normalized at use
+const CAMERA_TWEEN_MS = 1400;
+
 let targets = null; // preset arrays + "diagram", filled in initViz/loadDiagram
 let diagramColors = null;
+
+// Diagram bookkeeping for focus/navigation, rebuilt on loadDiagram.
+let currentGraph = null;
+let nodeById = new Map();
+let childrenByParent = new Map();
+let diagramNodeRanges = new Map();
+let diagramEdgeRanges = [];
+let focusedNodeId = null;
+let defocusTarget = 0;
+let cameraTween = null;
+let lastFrameTime = performance.now();
 
 let currentShape = "tree";
 let pickedColor = "#00ffcc";
@@ -52,7 +67,7 @@ export function initViz(container, initialColorHex) {
   scene.fog = new THREE.FogExp2(0x050505, 0.012);
 
   camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
-  camera.position.set(0, 5, 58);
+  camera.position.set(DEFAULT_CAMERA_POS.x, DEFAULT_CAMERA_POS.y, DEFAULT_CAMERA_POS.z);
 
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -78,6 +93,10 @@ export function initViz(container, initialColorHex) {
   particleGeometry.setAttribute(
     "color",
     new THREE.BufferAttribute(new Float32Array(PARTICLE_COUNT * 3), 3)
+  );
+  particleGeometry.setAttribute(
+    "focus",
+    new THREE.BufferAttribute(new Float32Array(PARTICLE_COUNT).fill(1), 1)
   );
   fillFlatColor(pickedColor);
 
@@ -121,6 +140,7 @@ function beginMorphTo(targetArray) {
 
 export function setShape(name) {
   if (!(name in targets) || !targets[name]) return false;
+  if (name !== "diagram" && focusedNodeId !== null) clearFocus();
   currentShape = name;
   beginMorphTo(targets[name]);
   if (name === "diagram") {
@@ -138,9 +158,118 @@ export function setBaseColor(hex) {
 }
 
 export function loadDiagram(graph) {
-  const { positions, colors } = sceneGraphToTargets(graph, PARTICLE_COUNT);
+  const { positions, colors, nodeRanges, edgeRanges } = sceneGraphToTargets(graph, PARTICLE_COUNT);
   targets.diagram = positions;
   diagramColors = colors;
+  diagramNodeRanges = nodeRanges;
+  diagramEdgeRanges = edgeRanges;
+
+  currentGraph = graph;
+  nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
+  childrenByParent = new Map();
+  for (const n of graph.nodes) {
+    if (n.parent != null) {
+      if (!childrenByParent.has(n.parent)) childrenByParent.set(n.parent, []);
+      childrenByParent.get(n.parent).push(n);
+    }
+  }
+
+  // Regenerating while focused: reset focus state for the new graph.
+  resetFocusAttribute();
+  focusedNodeId = null;
+  defocusTarget = 0;
+}
+
+function resetFocusAttribute() {
+  particleGeometry.attributes.focus.array.fill(1);
+  particleGeometry.attributes.focus.needsUpdate = true;
+}
+
+function collectSubtree(nodeId) {
+  const subtree = new Set([nodeId]);
+  const queue = [nodeId];
+  while (queue.length) {
+    const kids = childrenByParent.get(queue.pop()) || [];
+    for (const k of kids) {
+      subtree.add(k.id);
+      queue.push(k.id);
+    }
+  }
+  return subtree;
+}
+
+function startCameraTween(toPos, toTarget) {
+  cameraTween = {
+    t0: performance.now(),
+    fromPos: camera.position.clone(),
+    fromTarget: controls.target.clone(),
+    toPos,
+    toTarget
+  };
+}
+
+/**
+ * Tween the camera toward a node's cluster and fade everything outside its
+ * subtree. Framing distance comes from the subtree's bounding radius so
+ * deeper (smaller) nodes get proportionally closer views.
+ */
+export function focusNode(nodeId) {
+  if (currentShape !== "diagram" || !currentGraph) return false;
+  const node = nodeById.get(nodeId);
+  if (!node) return false;
+
+  const subtree = collectSubtree(nodeId);
+
+  const focusArr = particleGeometry.attributes.focus.array;
+  focusArr.fill(0);
+  for (const id of subtree) {
+    const range = diagramNodeRanges.get(id);
+    if (range) focusArr.fill(1, range.start, range.start + range.count);
+  }
+  for (const er of diagramEdgeRanges) {
+    if (subtree.has(er.from) && subtree.has(er.to)) {
+      focusArr.fill(1, er.start, er.start + er.count);
+    }
+  }
+  particleGeometry.attributes.focus.needsUpdate = true;
+  defocusTarget = 1;
+
+  let radius = node.size;
+  for (const id of subtree) {
+    const n = nodeById.get(id);
+    const d = Math.hypot(
+      n.position.x - node.position.x,
+      n.position.y - node.position.y,
+      n.position.z - node.position.z
+    );
+    radius = Math.max(radius, d + n.size);
+  }
+
+  const scale = morphUniforms.uScale.value;
+  particleSystem.updateMatrixWorld();
+  const center = particleSystem.localToWorld(
+    new THREE.Vector3(node.position.x, node.position.y, node.position.z).multiplyScalar(scale)
+  );
+  const dist = THREE.MathUtils.clamp(radius * 2.8, 5, 90) * scale;
+  const dir = new THREE.Vector3(FOCUS_VIEW_DIR.x, FOCUS_VIEW_DIR.y, FOCUS_VIEW_DIR.z).normalize();
+  startCameraTween(center.clone().addScaledVector(dir, dist), center);
+
+  focusedNodeId = nodeId;
+  return true;
+}
+
+export function clearFocus() {
+  resetFocusAttribute();
+  defocusTarget = 0;
+  focusedNodeId = null;
+  startCameraTween(
+    new THREE.Vector3(DEFAULT_CAMERA_POS.x, DEFAULT_CAMERA_POS.y, DEFAULT_CAMERA_POS.z),
+    new THREE.Vector3(0, 0, 0)
+  );
+}
+
+export function getFocusedNodeId() {
+  return focusedNodeId;
 }
 
 export function setRotationTarget(x, y) {
@@ -157,12 +286,27 @@ function animate() {
 
   if (!particleSystem || !particleGeometry) return;
 
+  const now = performance.now();
+  const dt = Math.min(0.1, (now - lastFrameTime) / 1000);
+  lastFrameTime = now;
+
   gestureScale += (targetGestureScale - gestureScale) * 0.12;
   const actualScale = BASE_MODEL_SCALE * gestureScale;
 
-  // No per-particle CPU work here anymore — just three scalar uniforms.
+  // No per-particle CPU work here — scalar uniforms only.
   morphUniforms.uScale.value += (actualScale - morphUniforms.uScale.value) * MORPH_EASE;
   morphUniforms.uMix.value += (1 - morphUniforms.uMix.value) * MORPH_EASE;
+  // Defocus fade is wall-clock based so it feels the same at any frame rate.
+  morphUniforms.uDefocus.value +=
+    (defocusTarget - morphUniforms.uDefocus.value) * Math.min(1, dt * 6);
+
+  if (cameraTween) {
+    const t = Math.min(1, (now - cameraTween.t0) / CAMERA_TWEEN_MS);
+    const e = t * t * (3 - 2 * t); // smoothstep
+    camera.position.lerpVectors(cameraTween.fromPos, cameraTween.toPos, e);
+    controls.target.lerpVectors(cameraTween.fromTarget, cameraTween.toTarget, e);
+    if (t >= 1) cameraTween = null;
+  }
 
   particleSystem.rotation.y += (targetRotationY - particleSystem.rotation.y) * 0.05;
   particleSystem.rotation.x += (targetRotationX - particleSystem.rotation.x) * 0.05;

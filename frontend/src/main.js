@@ -1,4 +1,4 @@
-import { initViz, setShape, setBaseColor, loadDiagram, setRotationTarget, setScaleTarget } from "./viz/particles.js";
+import { initViz, setShape, setBaseColor, loadDiagram, focusNode, clearFocus, setRotationTarget, setScaleTarget } from "./viz/particles.js";
 import { initGestures } from "./gestures/hands.js";
 import { initUI } from "./ui/panel.js";
 import { StubBackend } from "../../backend/model-backends/stub-backend.js";
@@ -39,6 +39,7 @@ async function generateDiagram(prompt, ui) {
     loadDiagram(result.data);
     setShape("diagram");
     ui.showDiagramShape();
+    ui.populateFocusTree(result.data);
     ui.setPipelineStatus(
       `Rendered ${result.data.nodes.length} nodes / ${result.data.edges.length} edges via "${result.backend}" backend.`,
       "ok"
@@ -61,7 +62,8 @@ window.addEventListener("DOMContentLoaded", () => {
   const ui = initUI({
     onShapeChange: (name) => setShape(name),
     onColorChange: (hex) => setBaseColor(hex),
-    onGenerate: (prompt) => generateDiagram(prompt, ui)
+    onGenerate: (prompt) => generateDiagram(prompt, ui),
+    onFocusChange: (nodeId) => (nodeId ? focusNode(nodeId) : clearFocus())
   });
 
   initGestures({
@@ -72,7 +74,7 @@ window.addEventListener("DOMContentLoaded", () => {
     onScaleTarget: setScaleTarget
   });
 
-  // Debug/testing handle: drives the same setters the gesture module uses,
-  // for environments where no webcam is available.
-  window.__pra = { setShape, setScaleTarget, setRotationTarget };
+  // Debug/testing handle: drives the same setters the gesture and navigation
+  // UIs use, for environments where no webcam is available.
+  window.__pra = { setShape, setScaleTarget, setRotationTarget, focusNode, clearFocus };
 });
