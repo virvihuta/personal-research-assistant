@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Concept Scene Graph",
+  "description": "Structure an LLM returns to describe a concept diagram. The LLM authors structure and semantics (nodes, edges, hierarchy); the renderer owns particle physics. Positions are abstract layout coordinates (roughly -20..20 per axis), never raw particle coordinates. Referential rules the validator enforces on top of this schema: node ids are unique; edge from/to and node parent must reference existing node ids; no self-edges; parent links must be acyclic.",
+  "type": "object",
+  "required": ["nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "type": "string" },
+    "label": { "type": "string" },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/edge" }
+    }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": ["id", "label", "position", "size", "color"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]*$",
+          "description": "Stable kebab-case identifier. Voice navigation resolves to these."
+        },
+        "label": { "type": "string", "minLength": 1 },
+        "position": {
+          "type": "object",
+          "required": ["x", "y", "z"],
+          "additionalProperties": false,
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" },
+            "z": { "type": "number" }
+          }
+        },
+        "size": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 10,
+          "description": "Cluster radius in layout units; also weights how many particles the node receives."
+        },
+        "color": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "parent": {
+          "type": ["string", "null"],
+          "description": "Id of the containing node, or null for top-level nodes. Drives zoom/focus subtree resolution."
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "type": { "enum": ["flow", "residual", "reference"] }
+      }
+    }
+  }
+}
