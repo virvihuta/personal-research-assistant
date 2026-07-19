@@ -1,57 +1,70 @@
 # Personal Research Assistant
 
-An AI-powered personal research assistant built with the OpenAI API, Pydantic, and Gradio. The assistant is designed to work for a specific user, has access to callable tools, and runs as an interactive chat interface in the browser.
+A voice-navigable 3D research assistant that turns spoken questions into structured, explorable particle diagrams — say "explain a transformer," then "zoom into multi-head attention," and it navigates to and explains that specific part.
 
-## How It Works
+> **Status: early scaffold.** The particle renderer and gesture control work, and the diagram pipeline runs end-to-end on a stub backend (no API calls yet). Voice, real model backends, and camera zoom/focus navigation are not built — see the roadmap.
 
-The assistant maintains a conversation loop through Gradio's `ChatInterface`. On each message it calls the OpenAI API with the available tools attached. If the model decides to call a tool, the app handles the dispatch, feeds the result back into the conversation, and keeps looping until the model returns a final text response.
+## What works today
 
-Tool schemas are defined using **Pydantic models** — no hand-written JSON. The model's `model_json_schema()` method generates the schema automatically, keeping the definition and the function in sync.
+- **35,000-point WebGL particle cloud** that morphs between preset shapes (tree / Saturn / heart), with mouse orbit controls
+- **Webcam hand tracking** (MediaPipe Hands): make a fist and move toward/away from the camera to scale; hand position rotates the cloud
+- **End-to-end stub diagram pipeline**: a text prompt goes through the `ModelBackend` interface → the stub returns a hardcoded transformer scene graph → the graph is schema-validated → valid graphs render as per-node colored particle clusters with particle streams along the edges
+- **Graceful degradation**: MediaPipe failing to load, camera permission denied, or an invalid scene graph each produce a visible status message instead of a broken page
 
-## Tools
+## Run it
 
-| Tool | Description |
-|---|---|
-| `send_email` | Sends an email to a specified recipient with a subject and body |
-
-> Web search via Serper API is configured and coming next.
-
-## Stack
-
-- **OpenAI API** — `gpt-5-nano` for completions and tool calling
-- **Pydantic** — schema generation for tool definitions
-- **Gradio** — browser-based chat UI
-- **python-dotenv** — environment variable management
-
-## Setup
+No build step, no dependencies to install. From the repo root:
 
 ```bash
-pip install openai pydantic gradio python-dotenv requests
+python3 -m http.server 8000
 ```
 
-Create a `.env` file in the project root:
+Then open <http://localhost:8000/frontend/src/> (any static file server works — but serve from the **repo root**, because the frontend imports the backend's ES modules by relative path).
+
+Notes:
+
+- A served origin is required — opening the HTML via `file://` will not work (ES modules), and **camera access requires localhost or HTTPS**.
+- The page loads Three.js and MediaPipe from CDNs, so first load needs network access. If MediaPipe fails to load, particles still work; only gestures are disabled.
+
+Run the schema validator tests with:
+
+```bash
+node backend/schemas/validate-scene-graph.test.mjs
+```
+
+## Architecture
+
+The core design decision: **the LLM authors a scene graph, never raw particle coordinates.** The model returns nodes (id, label, position, size, color, parent) and typed edges; the renderer owns particle placement, physics, and morphing. A validator sits between the two so a malformed model response degrades to an error message rather than crashing the render.
+
+The second key decision is a **tiered, swappable model backend**: one `ModelBackend` interface (`generate(prompt, {schema?}) → {text, data}`) with per-tier implementations behind it — a hosted Claude backend for scene-graph generation (reliability-critical structured output) and a self-hosted OSS model for open-ended chat (where an imperfect answer is acceptable). Today only the offline `StubBackend` exists, which is what lets the whole pipeline be developed and tested without any API keys.
 
 ```
-OPENAI_API_KEY=your_openai_key
-X-API-KEY=your_serper_key
-```
-
-## Run
-
-Open `main.ipynb` in Jupyter and run all cells. Gradio will launch a local server at `http://127.0.0.1:7860`.
-
-## Project Structure
-
-```
-├── main.ipynb       # Main notebook
-├── .env             # API keys (not committed)
-└── README.md
+frontend/src/
+  viz/        Three.js scene, preset shapes, scene-graph → particle-cluster expansion
+  gestures/   MediaPipe Hands wiring + gesture classification
+  voice/      (empty — milestone 7)
+  ui/         control panel, status boxes, styles
+backend/
+  model-backends/   ModelBackend interface + StubBackend (Claude + local OSS later)
+  schemas/          scene graph JSON Schema + validator + tests
+  templates/        (empty — layout templates arrive in milestone 3)
+  tools/            (empty — stretch: sandboxed code execution, arXiv search)
+docs/
+  brief.md    project north star: scope, quality bar, milestone order
 ```
 
 ## Roadmap
 
-- [ ] Add web search tool via Serper API
-- [ ] Add Wikipedia lookup tool
-- [ ] Add arXiv paper search
-- [ ] Wire up real SMTP for email sending
-- [ ] Explore same implementation in raw API and LangChain for comparison
+1. [x] Repo scaffold + `ModelBackend` interface with stub backend, wired end-to-end to the renderer
+2. [ ] GPU shader migration for particle morphing (currently a CPU per-frame lerp — the known bottleneck)
+3. [ ] Scene graph transformer layout template (schema + validation already in place)
+4. [ ] Claude backend generating the transformer scene graph from a text prompt
+5. [ ] Camera zoom / focus-defocus navigation by node id
+6. [ ] Contextual explanation flow (second LLM call scoped to the focused node)
+7. [ ] Voice loop (local Whisper STT in, Piper TTS out; browser `speechSynthesis` fallback)
+8. [ ] Polish: error-handling audit, architecture doc, benchmarks, demo video
+9. [ ] Stretch: sandboxed code execution, session memory, arXiv search, richer gestures
+
+## Deliberately not built
+
+Wake-word detection (push-to-talk is fine), smart-home/room-scale presence detection, "zero-latency" responses, and autonomous action-taking without confirmation. These are out of scope by design — see [docs/brief.md](docs/brief.md).
