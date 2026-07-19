@@ -71,4 +71,8 @@ window.addEventListener("DOMContentLoaded", () => {
     onRotationTarget: setRotationTarget,
     onScaleTarget: setScaleTarget
   });
+
+  // Debug/testing handle: drives the same setters the gesture module uses,
+  // for environments where no webcam is available.
+  window.__pra = { setShape, setScaleTarget, setRotationTarget };
 });
