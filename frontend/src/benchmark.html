@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Particle Morph Benchmark — CPU loop vs GPU shader</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      background: #050505;
+      color: #eee;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    h1 { font-size: 18px; color: #00ffcc; }
+    #status { margin: 12px 0; font-size: 14px; color: #aaa; }
+    table { border-collapse: collapse; font-size: 13px; }
+    th, td { border: 1px solid #333; padding: 6px 12px; text-align: right; }
+    th { background: #111; }
+    td:first-child, th:first-child { text-align: left; }
+    #canvas-holder canvas { border: 1px solid #222; width: 480px; height: 270px; }
+    #raw { font-size: 11px; color: #666; white-space: pre-wrap; max-width: 900px; }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+  <h1>Particle morph benchmark — CPU per-frame lerp vs GPU vertex shader</h1>
+  <div id="status">Loading…</div>
+  <table id="results">
+    <thead>
+      <tr>
+        <th>particles</th><th>mode</th><th>morph ms/frame</th>
+        <th>total ms/frame (median)</th><th>p95 ms</th><th>max FPS (1000/median)</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  </table>
+  <p id="env" style="font-size:12px;color:#888"></p>
+  <div id="canvas-holder"></div>
+  <pre id="raw"></pre>
+  <script type="module" src="./viz/benchmark.js"></script>
+</body>
+</html>

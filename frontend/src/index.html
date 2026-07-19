@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Personal Research Assistant — Particle Visualization</title>
+  <link rel="stylesheet" href="./ui/style.css" />
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+
+<body>
+  <div id="loading">Loading particle system and camera...</div>
+  <div id="canvas-container"></div>
+
+  <video id="webcam" autoplay playsinline muted></video>
+
+  <div class="ui-panel">
+    <h2>Particle Control Center</h2>
+
+    <div class="control-group">
+      <label>3D Particle Shape</label>
+      <select id="model-select">
+        <option value="tree">Sparkling Christmas Tree</option>
+        <option value="saturn">Mysterious Saturn</option>
+        <option value="heart">Romantic Heart</option>
+      </select>
+    </div>
+
+    <div class="control-group">
+      <label>Particle Color</label>
+      <div class="color-picker-wrapper">
+        <input type="color" id="particle-color" value="#00ffcc" />
+        <span id="color-hex">#00ffcc</span>
+      </div>
+    </div>
+
+    <div class="control-group">
+      <label>Concept Diagram (stub backend)</label>
+      <input type="text" id="diagram-prompt" value="Explain a transformer" />
+      <button class="btn btn-full" id="btn-generate">Generate Diagram</button>
+      <div class="status-box" id="pipeline-status">No diagram generated yet.</div>
+    </div>
+
+    <div class="status-box" id="gesture-status">
+      Particles displayed. Waiting for camera permission...
+    </div>
+  </div>
+
+  <div class="top-right-controls">
+    <button class="btn" id="btn-fullscreen">Fullscreen</button>
+  </div>
+
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
