@@ -6,7 +6,7 @@ A voice-navigable 3D research assistant that turns spoken questions into structu
 
 ## What works today
 
-- **35,000-point WebGL particle cloud** that morphs between preset shapes (tree / Saturn / heart), with mouse orbit controls
+- **35,000-point WebGL particle cloud** that morphs between preset shapes (tree / Saturn / heart), with mouse orbit controls — morphing runs in a GPU vertex shader ([benchmarks](docs/benchmarks.md))
 - **Webcam hand tracking** (MediaPipe Hands): make a fist and move toward/away from the camera to scale; hand position rotates the cloud
 - **End-to-end stub diagram pipeline**: a text prompt goes through the `ModelBackend` interface → the stub returns a hardcoded transformer scene graph → the graph is schema-validated → valid graphs render as per-node colored particle clusters with particle streams along the edges
 - **Graceful degradation**: MediaPipe failing to load, camera permission denied, or an invalid scene graph each produce a visible status message instead of a broken page
@@ -32,6 +32,8 @@ Run the schema validator tests with:
 node backend/schemas/validate-scene-graph.test.mjs
 ```
 
+A frame-cost benchmark (CPU-loop vs GPU-shader morphing) auto-runs at <http://localhost:8000/frontend/src/benchmark.html>; results and methodology live in [docs/benchmarks.md](docs/benchmarks.md).
+
 ## Architecture
 
 The core design decision: **the LLM authors a scene graph, never raw particle coordinates.** The model returns nodes (id, label, position, size, color, parent) and typed edges; the renderer owns particle placement, physics, and morphing. A validator sits between the two so a malformed model response degrades to an error message rather than crashing the render.
@@ -56,7 +58,7 @@ docs/
 ## Roadmap
 
 1. [x] Repo scaffold + `ModelBackend` interface with stub backend, wired end-to-end to the renderer
-2. [ ] GPU shader migration for particle morphing (currently a CPU per-frame lerp — the known bottleneck)
+2. [x] GPU shader migration for particle morphing (per-frame morph cost now ~0 ms; 10× total frame-cost win at 1M particles — [docs/benchmarks.md](docs/benchmarks.md))
 3. [ ] Scene graph transformer layout template (schema + validation already in place)
 4. [ ] Claude backend generating the transformer scene graph from a text prompt
 5. [ ] Camera zoom / focus-defocus navigation by node id
