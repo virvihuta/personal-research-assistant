@@ -172,7 +172,11 @@ window.addEventListener("DOMContentLoaded", () => {
       updateHover();
     },
     onSelect: () => {
+      // Click on a hovered node focuses it; click on empty space deselects
+      // back to Overview (no-op when already there, so a stray click can't
+      // yank away a manually orbited/zoomed overview framing).
       if (hoveredId) navigateTo(hoveredId);
+      else if (focusedId) navigateTo(null);
     }
   };
 
