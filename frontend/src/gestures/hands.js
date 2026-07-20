@@ -1,11 +1,9 @@
 // MediaPipe Hands wiring + per-frame gesture classification. window.Hands and
 // window.Camera come from the classic CDN scripts loaded in index.html.
 //
-// Classification priority per frame: pinch > fist > pointer/click poses >
-// idle. Pinch and fist are additionally mutually exclusive by construction:
-// pinch requires the middle/ring/pinky fingers to NOT be curled (a fist
-// always curls at least two of them), so a closed fist can never read as a
-// pinch no matter the thumb-index distance.
+// This module turns landmarks into conditioned signals; the actual pose
+// decision lives in classify.js (pure, unit-tested), where pinch/fist/
+// pointer are kept mutually exclusive by construction — see its header.
 //
 // Signal conditioning (filters.js):
 // - Raw scalars (finger extension ratios, pinch ratio, openness) run through
@@ -19,6 +17,7 @@
 // unit-tested GestureStateMachine.
 
 import { GestureStateMachine } from "./gesture-state.js";
+import { classifyHandState } from "./classify.js";
 import { OneEuroFilter, Ema, LatchedThreshold } from "./filters.js";
 
 // Palm-size -> scale mapping retained from the original prototype; now it
@@ -29,16 +28,8 @@ const PALM_SIZE_MIN = 0.11;
 const PALM_SIZE_MAX = 0.28;
 const PALM_SIZE_SCALE_ONE = 0.1547368421;
 
-// Pinch = thumb tip to index tip distance relative to palm size, with
-// hysteresis, PLUS the pose gate above (engage needs at most 1 of
-// middle/ring/pinky curled; an engaged pinch tolerates 2 before releasing).
-const PINCH_ON_RATIO = 0.34;
-const PINCH_OFF_RATIO = 0.46;
-const PINCH_ENGAGE_MAX_CURLED = 1;
-const PINCH_HOLD_MAX_CURLED = 2;
-
-// Legacy curl thresholds (tip-to-wrist vs pip-to-wrist ratio) — kept for
-// FIST detection only, applied to smoothed ratios.
+// Legacy curl thresholds (tip-to-wrist vs pip-to-wrist ratio) — feed the
+// fist/pinch conditions in classify.js, applied to smoothed ratios.
 const CURL_RATIO_INDEX_MIDDLE_RING = 1.08;
 const CURL_RATIO_PINKY = 1.12;
 const CURL_RATIO_THUMB = 1.1;
@@ -225,15 +216,12 @@ export function initGestures({ videoElement, statusBox, loadingText, handlers })
       pinky: ratio.pinky < CURL_RATIO_PINKY,
       thumb: ratio.thumb < CURL_RATIO_THUMB
     };
-    const curledCount = [curled.index, curled.middle, curled.ring, curled.pinky].filter(Boolean).length;
-
     const fingertipSpread =
       (
         fromPalm(thumbTip) + fromPalm(indexTip) + fromPalm(middleTip) +
         fromPalm(ringTip) + fromPalm(pinkyTip)
       ) / 5;
     const openness = opennessEma.filter(fingertipSpread / palmSize);
-    const isFist = openness < 1.72 && curled.thumb && curledCount >= 3;
 
     // Deliberate-extension latches for pointer/click poses.
     const extended = {
@@ -243,22 +231,16 @@ export function initGestures({ videoElement, statusBox, loadingText, handlers })
       pinky: extendLatch.pinky.update(ratio.pinky)
     };
 
-    // Pinch: thumb-index distance AND middle/ring/pinky not curled. A fist
-    // always curls >= 2 of those three, so fist and pinch are mutually
-    // exclusive regardless of check order.
     const pinchRatioRaw = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y) / palmSize;
     const pinchRatio = pinchEma.filter(pinchRatioRaw);
-    const othersCurled = [curled.middle, curled.ring, curled.pinky].filter(Boolean).length;
-    const pinched = machine.state === "pinch"
-      ? pinchRatio < PINCH_OFF_RATIO && othersCurled <= PINCH_HOLD_MAX_CURLED
-      : pinchRatio < PINCH_ON_RATIO && othersCurled <= PINCH_ENGAGE_MAX_CURLED;
 
-    let state;
-    if (pinched) state = "pinch";
-    else if (isFist) state = "fist";
-    else if (extended.index && !extended.middle && !extended.ring && !extended.pinky) state = "pointer";
-    else if (extended.index && extended.middle && !extended.ring && !extended.pinky) state = "click";
-    else state = "idle";
+    const state = classifyHandState({
+      wasPinching: machine.state === "pinch",
+      pinchRatio,
+      curled,
+      extended,
+      openness
+    });
 
     // Mirrored coordinates (the webcam preview is mirrored, so "hand moves
     // right on screen" means x decreases in landmark space). The pinch-drag
@@ -290,9 +272,9 @@ export function initGestures({ videoElement, statusBox, loadingText, handlers })
       state,
       pinchRatio,
       pinchRatioRaw,
-      othersCurled,
+      othersCurled: [curled.middle, curled.ring, curled.pinky].filter(Boolean).length,
       openness,
-      isFist,
+      isFist: state === "fist",
       thumbCurled: curled.thumb,
       fingers: {
         index: { ratio: ratio.index, extended: extended.index, curled: curled.index },
