@@ -3,13 +3,15 @@
 // engagement) is unit-testable in Node. hands.js classifies landmarks into an
 // observation per frame; this turns observations into events.
 //
-// Observation: { state, pinchX?, pinchY?, palmScale? }
-//   state ∈ "pinch" | "fist" | "pointer" | "click" | "idle" | "none"
+// Observation: { state, pinchX?, pinchY?, gatherX?, palmScale? }
+//   state ∈ "pinch" | "fist" | "gather" | "pointer" | "click" | "idle" | "none"
 //   pinchX/pinchY — pinch midpoint in mirrored normalized screen coords
+//   gatherX      — hand center X (mirrored normalized) while gathered
 //   palmScale    — mapPalmSizeToScale(palmSize), used for zoom ratios
 //
 // Events:
 //   { type: "orbit", dx, dy }    — pinch-drag delta (normalized units)
+//   { type: "pan", dx }          — gather-drag delta, strictly horizontal
 //   { type: "zoomStart" }        — fist engaged; capture camera distance now
 //   { type: "zoomRatio", ratio } — palmScale relative to engagement (>1 = in)
 //   { type: "select" }           — one-shot click at the current hover target
@@ -24,6 +26,7 @@ export class GestureStateMachine {
   constructor() {
     this.state = "none";
     this.lastPinch = null;
+    this.lastGatherX = null;
     this.zoomEngageScale = null;
     this.clickArmed = true;
     this.framesSincePointer = Infinity;
@@ -51,6 +54,18 @@ export class GestureStateMachine {
       this.lastPinch = { x: obs.pinchX, y: obs.pinchY };
     } else {
       this.lastPinch = null;
+    }
+
+    // Gather pan: same clutch discipline as pinch orbit, but strictly
+    // horizontal — vertical hand movement while gathered is ignored.
+    if (state === "gather") {
+      if (prev === "gather" && this.lastGatherX !== null) {
+        const dx = obs.gatherX - this.lastGatherX;
+        if (dx !== 0) events.push({ type: "pan", dx });
+      }
+      this.lastGatherX = obs.gatherX;
+    } else {
+      this.lastGatherX = null;
     }
 
     // Fist zoom relative to the scale at engagement, so re-fisting at any

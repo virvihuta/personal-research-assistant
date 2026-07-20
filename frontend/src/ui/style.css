@@ -246,6 +246,26 @@ input[type="color"]::-webkit-color-swatch {
   color: #c9c9d4;
 }
 
+#gesture-debug {
+  display: none;
+  position: absolute;
+  left: 20px;
+  bottom: 20px;
+  z-index: 8;
+  padding: 10px 14px;
+  background: rgba(10, 10, 14, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  color: #9fe8d8;
+  pointer-events: none;
+}
+
+#gesture-debug.visible { display: block; }
+
 #loading {
   position: absolute;
   top: 50%;

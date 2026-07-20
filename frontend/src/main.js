@@ -1,6 +1,6 @@
 import {
   initViz, setShape, setBaseColor, loadDiagram, focusNode, clearFocus,
-  orbitCameraBy, beginZoom, setZoomRatio, setZoomDistance,
+  orbitCameraBy, panCameraBy, beginZoom, setZoomRatio, setZoomDistance,
   setHoveredNode, setFrameCallback
 } from "./viz/particles.js";
 import { initGestures } from "./gestures/hands.js";
@@ -137,10 +137,30 @@ window.addEventListener("DOMContentLoaded", () => {
     if (cursor.active) updateHover();
   });
 
+  // Live detection readout for gesture tuning, gated behind ?debug.
+  const debugEl = document.getElementById("gesture-debug");
+  const debugEnabled = new URLSearchParams(location.search).has("debug");
+  if (debugEnabled) debugEl.classList.add("visible");
+  const formatDebug = (d) => {
+    if (d.state === "none") return "gesture: none (no hand)";
+    const finger = (name, f) =>
+      `${name} ${f.ratio.toFixed(2)} ${f.extended ? "EXT" : f.curled ? "curl" : "mid "}`;
+    return [
+      `gesture: ${d.state}`,
+      `pinch ${d.pinchRatio.toFixed(2)} (raw ${d.pinchRatioRaw.toFixed(2)})  m/r/p curled: ${d.othersCurled}`,
+      `gather ${d.gatherSpread.toFixed(2)} (raw ${d.gatherSpreadRaw.toFixed(2)})  pan dx ${d.panDx >= 0 ? "+" : ""}${d.panDx.toFixed(3)}`,
+      `${finger("idx", d.fingers.index)}  ${finger("mid", d.fingers.middle)}`,
+      `${finger("rng", d.fingers.ring)}  ${finger("pky", d.fingers.pinky)}`,
+      `openness ${d.openness.toFixed(2)}  thumb ${d.thumbCurled ? "curl" : "open"}  fist ${d.isFist ? "YES" : "no"}`
+    ].join("\n");
+  };
+
   const gestureHandlers = {
     onOrbitDelta: (deltaTheta, deltaPhi) => orbitCameraBy(deltaTheta, deltaPhi),
+    onPanDelta: (delta) => panCameraBy(delta),
     onZoomStart: () => beginZoom(),
     onZoomRatio: (ratio) => setZoomRatio(ratio),
+    onDebug: debugEnabled ? (info) => { debugEl.textContent = formatDebug(info); } : undefined,
     onPointer: (x, y) => {
       cursor.x = x;
       cursor.y = y;
@@ -154,7 +174,11 @@ window.addEventListener("DOMContentLoaded", () => {
       updateHover();
     },
     onSelect: () => {
+      // Click on a hovered node focuses it; click on empty space deselects
+      // back to Overview (no-op when already there, so a stray click can't
+      // yank away a manually orbited/zoomed overview framing).
       if (hoveredId) navigateTo(hoveredId);
+      else if (focusedId) navigateTo(null);
     }
   };
 
@@ -172,6 +196,7 @@ window.addEventListener("DOMContentLoaded", () => {
     focusNode: navigateTo,
     clearFocus: () => navigateTo(null),
     orbitBy: orbitCameraBy,
+    panBy: panCameraBy,
     zoomTo: setZoomDistance,
     pointer: gestureHandlers.onPointer,
     pointerEnd: gestureHandlers.onPointerEnd,
