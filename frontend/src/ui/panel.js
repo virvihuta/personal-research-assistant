@@ -53,6 +53,12 @@ export function initUI({ onShapeChange, onColorChange, onGenerate, onFocusChange
       generateBtn.textContent = busy ? "Generating…" : "Generate Diagram";
     },
 
+    // Keep the dropdown in sync when focus is driven by gesture click or the
+    // debug hook rather than the dropdown itself.
+    setFocusSelection(nodeId) {
+      focusSelect.value = nodeId || "";
+    },
+
     // The diagram entry only appears in the shape selector once a diagram exists.
     showDiagramShape() {
       if (!modelSelect.querySelector('option[value="diagram"]')) {

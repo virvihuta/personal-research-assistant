@@ -163,6 +163,89 @@ input[type="color"]::-webkit-color-swatch {
 
 .btn-full { width: 100%; }
 
+#label-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.node-pin {
+  position: absolute;
+  transform: translate(-50%, -130%);
+  padding: 4px 10px;
+  background: rgba(12, 12, 16, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-left: 3px solid var(--pin-color, var(--accent-color));
+  border-radius: 6px;
+  font-size: 12px;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.3s;
+  pointer-events: none;
+}
+
+#gesture-cursor {
+  position: absolute;
+  z-index: 7;
+  width: 34px;
+  height: 34px;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--accent-color);
+  border-radius: 50%;
+  box-shadow: 0 0 14px rgba(0, 255, 204, 0.55);
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+
+#gesture-cursor.active { opacity: 1; }
+
+#gesture-cursor::after {
+  content: "";
+  position: absolute;
+  inset: 12px;
+  border-radius: 50%;
+  background: var(--accent-color);
+}
+
+#node-card {
+  position: absolute;
+  right: 20px;
+  bottom: 172px; /* sits above the webcam preview */
+  width: 300px;
+  z-index: 6;
+  background: rgba(18, 18, 24, 0.82);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-left: 4px solid var(--card-color, var(--accent-color));
+  border-radius: 12px;
+  padding: 14px 16px;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.25s, transform 0.25s;
+  pointer-events: none;
+}
+
+#node-card.visible {
+  opacity: 1;
+  transform: none;
+}
+
+.node-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.node-card-desc {
+  font-size: 13px;
+  line-height: 1.55;
+  color: #c9c9d4;
+}
+
 #loading {
   position: absolute;
   top: 50%;

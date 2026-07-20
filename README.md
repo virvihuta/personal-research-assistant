@@ -7,7 +7,8 @@ A voice-navigable 3D research assistant that turns spoken questions into structu
 ## What works today
 
 - **35,000-point WebGL particle cloud** that morphs between preset shapes (tree / Saturn / heart), with mouse orbit controls — morphing runs in a GPU vertex shader ([benchmarks](docs/benchmarks.md))
-- **Webcam hand tracking** (MediaPipe Hands): make a fist and move toward/away from the camera to scale; hand position rotates the cloud
+- **Webcam gesture control** (MediaPipe Hands), all camera-driven and clutch-based: pinch-drag orbits continuously (full 360°, release/re-pinch anywhere to keep going), fist zooms with hand distance, index finger points a cursor that hover-highlights nodes, extending the middle finger click-selects the hovered node
+- **On-screen labels**: pins name the five top-level clusters at overview, and hovering or focusing any node shows a card with its plain-language description
 - **End-to-end stub diagram pipeline**: a text prompt goes through the `ModelBackend` interface → the stub returns the transformer layout template's scene graph (32 nodes, 3 zoom levels) → the graph is schema-validated → valid graphs render as per-node colored particle clusters with particle streams along the edges
 - **Zoom navigation with focus/defocus**: pick any node in the Navigate dropdown and the camera tweens to it while everything outside its subtree fades to gray — encoder stack → multi-head attention → a single head's Query/Key/Value, and back out to the overview
 - **Graceful degradation**: MediaPipe failing to load, camera permission denied, or an invalid scene graph each produce a visible status message instead of a broken page
@@ -61,6 +62,7 @@ docs/
 1. [x] Repo scaffold + `ModelBackend` interface with stub backend, wired end-to-end to the renderer
 2. [x] GPU shader migration for particle morphing (per-frame morph cost now ~0 ms; 10× total frame-cost win at 1M particles — [docs/benchmarks.md](docs/benchmarks.md))
 3. [x] Transformer layout template: 3 zoom levels (stacks → layer sublayers → parallel attention heads with Q/K/V), grounding descriptions on every node
+    - [x] 3.5: gesture overhaul (delta-based pinch-orbit / fist-zoom / pointer + click-select, unit-tested state machine) and screen-space labels (cluster pins + hover/focus description cards)
 4. [ ] Claude backend generating the transformer scene graph from a text prompt
 5. [x] Camera zoom / focus-defocus navigation by node id (done alongside milestone 3; manual dropdown until voice lands)
 6. [ ] Contextual explanation flow (second LLM call scoped to the focused node)

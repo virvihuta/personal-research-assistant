@@ -6,9 +6,14 @@ import { createMorphMaterial } from "./morph-shader.js";
 // the classic CDN scripts loaded in index.html.
 //
 // Morphing runs on the GPU (see morph-shader.js): per frame the CPU only
-// advances uMix/uScale uniforms. Per-particle CPU passes happen only on
-// discrete events: shape switches (beginMorphTo bake) and focus changes
-// (focus attribute refill).
+// advances uniforms. Per-particle CPU passes happen only on discrete events:
+// shape switches (beginMorphTo bake), focus changes (focus attribute refill),
+// and hover changes (highlight attribute refill).
+//
+// Gestures drive the CAMERA, not the mesh: pinch-drag orbits around the
+// OrbitControls target with accumulated deltas, fist zooms by dollying the
+// camera distance. The old absolute-hand-position mesh rotation/scale paths
+// are gone.
 
 let scene, camera, renderer, controls;
 let particleGeometry, particleSystem, morphUniforms;
@@ -19,13 +24,15 @@ const PARTICLE_COUNT = 35000;
 // At scale=1, the model should take up roughly 80% of the screen visually.
 const BASE_MODEL_SCALE = 1.75;
 
-// Same exponential chase factor the old CPU loop applied per frame, now used
-// for both the morph mix and the scale uniform so the motion feels unchanged.
+// Exponential chase factor for the morph mix, matching the original CPU loop.
 const MORPH_EASE = 0.08;
 
 const DEFAULT_CAMERA_POS = { x: 0, y: 5, z: 58 };
 const FOCUS_VIEW_DIR = { x: 0, y: 0.25, z: 1 }; // normalized at use
 const CAMERA_TWEEN_MS = 1400;
+const MIN_CAMERA_DISTANCE = 6;
+const MAX_CAMERA_DISTANCE = 220;
+const MIN_POLAR_ANGLE = 0.05; // keep orbit off the exact poles
 
 // Brightness by hierarchy depth relative to the focused node (Overview acts
 // as a virtual root one level above the top-level clusters). Two levels of
@@ -36,24 +43,30 @@ const FOCUS_WEIGHT_BY_REL_DEPTH = [1, 1, 1, 0.45, 0.35, 0.28];
 let targets = null; // preset arrays + "diagram", filled in initViz/loadDiagram
 let diagramColors = null;
 
-// Diagram bookkeeping for focus/navigation, rebuilt on loadDiagram.
+// Diagram bookkeeping for focus/hover/navigation, rebuilt on loadDiagram.
 let currentGraph = null;
 let nodeById = new Map();
 let childrenByParent = new Map();
 let nodeDepth = new Map();
+let nodeWeights = new Map();
 let diagramNodeRanges = new Map();
 let diagramEdgeRanges = [];
 let focusedNodeId = null;
+let hoveredNodeId = null;
 let defocusTarget = 0;
 let cameraTween = null;
+let zoomEngageDistance = null;
+let zoomTargetDistance = null;
+let frameCallback = null;
 let lastFrameTime = performance.now();
 
 let currentShape = "tree";
 let pickedColor = "#00ffcc";
-let gestureScale = 1.0;
-let targetGestureScale = 1.0;
-let targetRotationX = 0;
-let targetRotationY = 0;
+
+// Scratch objects reused every frame to avoid GC churn.
+const _vec = new THREE.Vector3();
+const _offset = new THREE.Vector3();
+const _spherical = new THREE.Spherical();
 
 function fillFlatColor(hex) {
   const c = new THREE.Color(hex);
@@ -105,6 +118,10 @@ export function initViz(container, initialColorHex) {
     "focus",
     new THREE.BufferAttribute(new Float32Array(PARTICLE_COUNT).fill(1), 1)
   );
+  particleGeometry.setAttribute(
+    "highlight",
+    new THREE.BufferAttribute(new Float32Array(PARTICLE_COUNT), 1)
+  );
   fillFlatColor(pickedColor);
 
   const material = createMorphMaterial({ size: 0.34, opacity: 0.95, fog: true });
@@ -149,6 +166,7 @@ export function setShape(name) {
   if (!(name in targets) || !targets[name]) return false;
   const leavingFocus = name !== "diagram" && focusedNodeId !== null;
   currentShape = name;
+  setHoveredNode(null);
   beginMorphTo(targets[name]);
   if (name === "diagram") {
     particleGeometry.attributes.color.array.set(diagramColors);
@@ -204,8 +222,9 @@ export function loadDiagram(graph) {
     nodeDepth.set(n.id, depth);
   }
 
-  // Regenerating while focused: back to the overview weighting.
+  // Regenerating while focused/hovered: back to a clean overview state.
   focusedNodeId = null;
+  setHoveredNode(null);
   applyFocusWeights(null);
 }
 
@@ -217,7 +236,9 @@ function weightForRelDepth(rel) {
 // Fill the per-particle focus attribute for a focus target (null = overview,
 // treated as a virtual root so top-level clusters sit at relative depth 1).
 // Nodes outside the focused subtree get 0; edges take the dimmer endpoint.
+// Also caches per-node weights for the overlay and hover candidate logic.
 function applyFocusWeights(focusId) {
+  if (!currentGraph) return;
   const subtree = focusId ? collectSubtree(focusId) : null;
   const focusDepth = focusId ? nodeDepth.get(focusId) : -1;
 
@@ -226,13 +247,16 @@ function applyFocusWeights(focusId) {
     return weightForRelDepth(nodeDepth.get(id) - focusDepth);
   };
 
+  nodeWeights = new Map();
+  for (const n of currentGraph.nodes) nodeWeights.set(n.id, weightOf(n.id));
+
   const focusArr = particleGeometry.attributes.focus.array;
   focusArr.fill(0);
   for (const [id, range] of diagramNodeRanges) {
-    focusArr.fill(weightOf(id), range.start, range.start + range.count);
+    focusArr.fill(nodeWeights.get(id) ?? 0, range.start, range.start + range.count);
   }
   for (const er of diagramEdgeRanges) {
-    const w = Math.min(weightOf(er.from), weightOf(er.to));
+    const w = Math.min(nodeWeights.get(er.from) ?? 0, nodeWeights.get(er.to) ?? 0);
     focusArr.fill(w, er.start, er.start + er.count);
   }
   particleGeometry.attributes.focus.needsUpdate = true;
@@ -252,6 +276,8 @@ function collectSubtree(nodeId) {
 }
 
 function startCameraTween(toPos, toTarget) {
+  zoomEngageDistance = null;
+  zoomTargetDistance = null;
   cameraTween = {
     t0: performance.now(),
     fromPos: camera.position.clone(),
@@ -315,13 +341,100 @@ export function getFocusedNodeId() {
   return focusedNodeId;
 }
 
-export function setRotationTarget(x, y) {
-  targetRotationX = x;
-  targetRotationY = y;
+// Hover preview: brightness/size bump on the node's particles (its whole
+// subtree, since parents render as their children). Distinct from focus.
+export function setHoveredNode(nodeId) {
+  if (nodeId === hoveredNodeId) return;
+  hoveredNodeId = nodeId;
+  const arr = particleGeometry.attributes.highlight.array;
+  arr.fill(0);
+  if (nodeId && currentShape === "diagram" && currentGraph) {
+    for (const id of collectSubtree(nodeId)) {
+      const range = diagramNodeRanges.get(id);
+      if (range) arr.fill(1, range.start, range.start + range.count);
+    }
+  }
+  particleGeometry.attributes.highlight.needsUpdate = true;
 }
 
-export function setScaleTarget(scale) {
-  targetGestureScale = scale;
+// --- Gesture-driven camera --------------------------------------------------
+
+// Accumulate a pinch-drag delta into the camera's orbit around the current
+// controls target. Called with deltas only — never absolute positions.
+export function orbitCameraBy(deltaTheta, deltaPhi) {
+  cameraTween = null;
+  zoomEngageDistance = null;
+  zoomTargetDistance = null;
+  _offset.copy(camera.position).sub(controls.target);
+  _spherical.setFromVector3(_offset);
+  _spherical.theta += deltaTheta;
+  _spherical.phi = THREE.MathUtils.clamp(
+    _spherical.phi + deltaPhi,
+    MIN_POLAR_ANGLE,
+    Math.PI - MIN_POLAR_ANGLE
+  );
+  _offset.setFromSpherical(_spherical);
+  camera.position.copy(controls.target).add(_offset);
+}
+
+// Fist zoom: capture the camera distance at engagement, then dolly by the
+// palm-scale ratio relative to that moment (clutched — re-fisting holds).
+export function beginZoom() {
+  cameraTween = null;
+  zoomEngageDistance = camera.position.distanceTo(controls.target);
+  zoomTargetDistance = null;
+}
+
+export function setZoomRatio(ratio) {
+  if (zoomEngageDistance === null) beginZoom();
+  zoomTargetDistance = THREE.MathUtils.clamp(
+    zoomEngageDistance / Math.max(ratio, 0.01),
+    MIN_CAMERA_DISTANCE,
+    MAX_CAMERA_DISTANCE
+  );
+}
+
+// Direct distance target — debug/testing path for webcam-less environments.
+export function setZoomDistance(distance) {
+  cameraTween = null;
+  zoomEngageDistance = null;
+  zoomTargetDistance = THREE.MathUtils.clamp(distance, MIN_CAMERA_DISTANCE, MAX_CAMERA_DISTANCE);
+}
+
+// --- Overlay support ---------------------------------------------------------
+
+// fn(frame|null) is called once per rendered frame. frame.nodes carries every
+// node's projected screen position, focus weight, and hierarchy info for the
+// label pins and hover-candidate picking.
+export function setFrameCallback(fn) {
+  frameCallback = fn;
+}
+
+function emitFrame() {
+  if (!frameCallback) return;
+  if (currentShape !== "diagram" || !currentGraph) {
+    frameCallback(null);
+    return;
+  }
+  const width = renderer.domElement.clientWidth;
+  const height = renderer.domElement.clientHeight;
+  const scale = morphUniforms.uScale.value;
+  const nodes = [];
+  for (const n of currentGraph.nodes) {
+    _vec.set(n.position.x, n.position.y, n.position.z)
+      .multiplyScalar(scale)
+      .applyMatrix4(particleSystem.matrixWorld)
+      .project(camera);
+    nodes.push({
+      id: n.id,
+      topLevel: n.parent == null,
+      weight: nodeWeights.get(n.id) ?? 1,
+      inFront: _vec.z < 1,
+      x: (_vec.x * 0.5 + 0.5) * width,
+      y: (-_vec.y * 0.5 + 0.5) * height
+    });
+  }
+  frameCallback({ focusedId: focusedNodeId, nodes });
 }
 
 function animate() {
@@ -333,11 +446,6 @@ function animate() {
   const dt = Math.min(0.1, (now - lastFrameTime) / 1000);
   lastFrameTime = now;
 
-  gestureScale += (targetGestureScale - gestureScale) * 0.12;
-  const actualScale = BASE_MODEL_SCALE * gestureScale;
-
-  // No per-particle CPU work here — scalar uniforms only.
-  morphUniforms.uScale.value += (actualScale - morphUniforms.uScale.value) * MORPH_EASE;
   morphUniforms.uMix.value += (1 - morphUniforms.uMix.value) * MORPH_EASE;
   // Defocus fade is wall-clock based so it feels the same at any frame rate.
   morphUniforms.uDefocus.value +=
@@ -349,13 +457,16 @@ function animate() {
     camera.position.lerpVectors(cameraTween.fromPos, cameraTween.toPos, e);
     controls.target.lerpVectors(cameraTween.fromTarget, cameraTween.toTarget, e);
     if (t >= 1) cameraTween = null;
+  } else if (zoomTargetDistance !== null) {
+    _offset.copy(camera.position).sub(controls.target);
+    const dist = _offset.length();
+    const next = dist + (zoomTargetDistance - dist) * 0.12;
+    camera.position.copy(controls.target).add(_offset.multiplyScalar(next / dist));
   }
-
-  particleSystem.rotation.y += (targetRotationY - particleSystem.rotation.y) * 0.05;
-  particleSystem.rotation.x += (targetRotationX - particleSystem.rotation.x) * 0.05;
 
   controls.update();
   renderer.render(scene, camera);
+  emitFrame();
 }
 
 function onWindowResize() {
