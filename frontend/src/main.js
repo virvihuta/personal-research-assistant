@@ -1,8 +1,16 @@
-import { initViz, setShape, setBaseColor, loadDiagram, focusNode, clearFocus, setRotationTarget, setScaleTarget } from "./viz/particles.js";
+import {
+  initViz, setShape, setBaseColor, loadDiagram, focusNode, clearFocus,
+  orbitCameraBy, beginZoom, setZoomRatio, setZoomDistance,
+  setHoveredNode, setFrameCallback
+} from "./viz/particles.js";
 import { initGestures } from "./gestures/hands.js";
 import { initUI } from "./ui/panel.js";
+import { initOverlay } from "./ui/overlay.js";
 import { StubBackend } from "../../backend/model-backends/stub-backend.js";
 import { validateSceneGraph } from "../../backend/schemas/validate-scene-graph.js";
+
+// Hover-picking radius around the gesture cursor, in screen pixels.
+const HOVER_RADIUS_PX = 90;
 
 // Swap for ClaudeBackend (Tier 1) / LocalOSSBackend (Tier 2) in later
 // milestones — the pipeline below only depends on the ModelBackend contract.
@@ -17,9 +25,53 @@ fetch("../../backend/schemas/scene-graph.schema.json")
   .then((schema) => { sceneGraphSchema = schema; })
   .catch(() => {});
 
+let ui, overlay;
 let generating = false;
+let graphNodeById = new Map();
+let lastFrame = null; // latest projection frame from the viz layer
+const cursor = { x: 0, y: 0, active: false };
+let hoveredId = null;
+let focusedId = null;
 
-async function generateDiagram(prompt, ui) {
+// Single navigation path shared by the dropdown, gesture click, and the
+// debug hook, so every trigger drives the same focus/zoom/defocus behavior
+// and the dropdown stays in sync.
+function navigateTo(nodeId) {
+  if (nodeId && !graphNodeById.has(nodeId)) return;
+  focusedId = nodeId || null;
+  if (focusedId) focusNode(focusedId);
+  else clearFocus();
+  ui.setFocusSelection(focusedId);
+  updateCard();
+}
+
+function updateCard() {
+  overlay.setCard(graphNodeById.get(hoveredId) || graphNodeById.get(focusedId) || null);
+}
+
+// Nearest vivid (weight ~1) node to the cursor within the pick radius.
+// Dimmed deep-detail nodes aren't hoverable until the user zooms toward them.
+function updateHover() {
+  let next = null;
+  if (cursor.active && lastFrame) {
+    let best = HOVER_RADIUS_PX;
+    for (const n of lastFrame.nodes) {
+      if (!n.inFront || n.weight < 0.999) continue;
+      const d = Math.hypot(n.x - cursor.x, n.y - cursor.y);
+      if (d < best) {
+        best = d;
+        next = n.id;
+      }
+    }
+  }
+  if (next !== hoveredId) {
+    hoveredId = next;
+    setHoveredNode(hoveredId);
+    updateCard();
+  }
+}
+
+async function generateDiagram(prompt) {
   if (generating) return;
   generating = true;
   ui.setGenerateBusy(true);
@@ -36,8 +88,12 @@ async function generateDiagram(prompt, ui) {
       return;
     }
 
+    graphNodeById = new Map(result.data.nodes.map((n) => [n.id, n]));
+    focusedId = null;
+    hoveredId = null;
     loadDiagram(result.data);
     setShape("diagram");
+    overlay.setGraph(result.data);
     ui.showDiagramShape();
     ui.populateFocusTree(result.data);
     ui.setPipelineStatus(
@@ -59,22 +115,67 @@ window.addEventListener("DOMContentLoaded", () => {
     document.getElementById("particle-color").value
   );
 
-  const ui = initUI({
-    onShapeChange: (name) => setShape(name),
+  overlay = initOverlay();
+
+  ui = initUI({
+    onShapeChange: (name) => {
+      setShape(name);
+      if (name !== "diagram") {
+        focusedId = null;
+        hoveredId = null;
+        updateCard();
+      }
+    },
     onColorChange: (hex) => setBaseColor(hex),
-    onGenerate: (prompt) => generateDiagram(prompt, ui),
-    onFocusChange: (nodeId) => (nodeId ? focusNode(nodeId) : clearFocus())
+    onGenerate: (prompt) => generateDiagram(prompt),
+    onFocusChange: (nodeId) => navigateTo(nodeId)
   });
+
+  setFrameCallback((frame) => {
+    lastFrame = frame;
+    overlay.sync(frame);
+    if (cursor.active) updateHover();
+  });
+
+  const gestureHandlers = {
+    onOrbitDelta: (deltaTheta, deltaPhi) => orbitCameraBy(deltaTheta, deltaPhi),
+    onZoomStart: () => beginZoom(),
+    onZoomRatio: (ratio) => setZoomRatio(ratio),
+    onPointer: (x, y) => {
+      cursor.x = x;
+      cursor.y = y;
+      cursor.active = true;
+      overlay.setCursor(x, y, true);
+      updateHover();
+    },
+    onPointerEnd: () => {
+      cursor.active = false;
+      overlay.setCursor(0, 0, false);
+      updateHover();
+    },
+    onSelect: () => {
+      if (hoveredId) navigateTo(hoveredId);
+    }
+  };
 
   initGestures({
     videoElement: document.getElementById("webcam"),
     statusBox: document.getElementById("gesture-status"),
     loadingText: document.getElementById("loading"),
-    onRotationTarget: setRotationTarget,
-    onScaleTarget: setScaleTarget
+    handlers: gestureHandlers
   });
 
-  // Debug/testing handle: drives the same setters the gesture and navigation
-  // UIs use, for environments where no webcam is available.
-  window.__pra = { setShape, setScaleTarget, setRotationTarget, focusNode, clearFocus };
+  // Debug/testing handle for webcam-less environments: drives the exact same
+  // handlers/paths the gesture module uses.
+  window.__pra = {
+    setShape,
+    focusNode: navigateTo,
+    clearFocus: () => navigateTo(null),
+    orbitBy: orbitCameraBy,
+    zoomTo: setZoomDistance,
+    pointer: gestureHandlers.onPointer,
+    pointerEnd: gestureHandlers.onPointerEnd,
+    select: gestureHandlers.onSelect,
+    frame: () => lastFrame
+  };
 });

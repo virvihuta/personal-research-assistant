@@ -13,16 +13,19 @@ export const MORPH_VERTEX_SHADER = /* glsl */ `
   uniform float uPointScale;
   attribute vec3 targetPosition;
   attribute float focus;
+  attribute float highlight;
   varying vec3 vColor;
   varying float vFocus;
+  varying float vHighlight;
   #include <fog_pars_vertex>
 
   void main() {
     vColor = color;
     vFocus = focus;
+    vHighlight = highlight;
     vec3 morphed = mix(position, targetPosition, uMix) * uScale;
     vec4 mvPosition = modelViewMatrix * vec4(morphed, 1.0);
-    gl_PointSize = uSize * (uPointScale / -mvPosition.z);
+    gl_PointSize = uSize * (uPointScale / -mvPosition.z) * (1.0 + 0.35 * highlight);
     gl_Position = projectionMatrix * mvPosition;
     #include <fog_vertex>
   }
@@ -36,12 +39,14 @@ export const MORPH_FRAGMENT_SHADER = /* glsl */ `
   uniform float uDefocus;
   varying vec3 vColor;
   varying float vFocus;
+  varying float vHighlight;
   #include <fog_pars_fragment>
 
   void main() {
     float dim = uDefocus * (1.0 - vFocus);
     vec3 grayed = vec3(dot(vColor, vec3(0.299, 0.587, 0.114))) * 0.35;
     vec3 color = mix(vColor, grayed, dim);
+    color *= 1.0 + 0.5 * vHighlight; // hover-preview brightness bump
     float alpha = uOpacity * mix(1.0, 0.3, dim);
     gl_FragColor = vec4(color, alpha);
     #include <fog_fragment>
