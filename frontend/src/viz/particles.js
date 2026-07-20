@@ -24,8 +24,13 @@ const PARTICLE_COUNT = 35000;
 // At scale=1, the model should take up roughly 80% of the screen visually.
 const BASE_MODEL_SCALE = 1.75;
 
-// Exponential chase factor for the morph mix, matching the original CPU loop.
-const MORPH_EASE = 0.08;
+// Easing rates in 1/seconds, applied as 1 - exp(-rate * dt) so the feel is
+// identical on 60Hz and 120Hz displays (resolves the frame-rate-dependence
+// TODO from the GPU shader migration). Values chosen to match the old
+// per-frame factors at 60 fps: 0.08/frame ~= 5/s, 0.12/frame ~= 7.5/s.
+const MORPH_RATE = 5.0;
+const DEFOCUS_RATE = 6.0;
+const ZOOM_RATE = 7.5;
 
 const DEFAULT_CAMERA_POS = { x: 0, y: 5, z: 58 };
 const FOCUS_VIEW_DIR = { x: 0, y: 0.25, z: 1 }; // normalized at use
@@ -337,10 +342,6 @@ export function clearFocus() {
   );
 }
 
-export function getFocusedNodeId() {
-  return focusedNodeId;
-}
-
 // Hover preview: brightness/size bump on the node's particles (its whole
 // subtree, since parents render as their children). Distinct from focus.
 export function setHoveredNode(nodeId) {
@@ -459,10 +460,11 @@ function animate() {
   const dt = Math.min(0.1, (now - lastFrameTime) / 1000);
   lastFrameTime = now;
 
-  morphUniforms.uMix.value += (1 - morphUniforms.uMix.value) * MORPH_EASE;
-  // Defocus fade is wall-clock based so it feels the same at any frame rate.
+  // All chases use dt-scaled exponential decay — frame-rate independent.
+  morphUniforms.uMix.value +=
+    (1 - morphUniforms.uMix.value) * (1 - Math.exp(-MORPH_RATE * dt));
   morphUniforms.uDefocus.value +=
-    (defocusTarget - morphUniforms.uDefocus.value) * Math.min(1, dt * 6);
+    (defocusTarget - morphUniforms.uDefocus.value) * (1 - Math.exp(-DEFOCUS_RATE * dt));
 
   if (cameraTween) {
     const t = Math.min(1, (now - cameraTween.t0) / CAMERA_TWEEN_MS);
@@ -473,7 +475,7 @@ function animate() {
   } else if (zoomTargetDistance !== null) {
     _offset.copy(camera.position).sub(controls.target);
     const dist = _offset.length();
-    const next = dist + (zoomTargetDistance - dist) * 0.12;
+    const next = dist + (zoomTargetDistance - dist) * (1 - Math.exp(-ZOOM_RATE * dt));
     camera.position.copy(controls.target).add(_offset.multiplyScalar(next / dist));
   }
 
