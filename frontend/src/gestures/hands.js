@@ -2,12 +2,24 @@
 // window.Camera come from the classic CDN scripts loaded in index.html.
 //
 // Classification priority per frame: pinch > fist > pointer/click poses >
-// idle, so a hand mid-transition between gestures can't misfire (a pinching
-// hand also satisfies most fist heuristics, and a fist briefly looks like
-// curled pointer fingers). Transition logic (clutch, one-shot click, zoom
-// engagement) lives in gesture-state.js, which is pure and unit-tested.
+// idle. Pinch and fist are additionally mutually exclusive by construction:
+// pinch requires the middle/ring/pinky fingers to NOT be curled (a fist
+// always curls at least two of them), so a closed fist can never read as a
+// pinch no matter the thumb-index distance.
+//
+// Signal conditioning (filters.js):
+// - Raw scalars (finger extension ratios, pinch ratio, openness) run through
+//   an EMA before any threshold, so boundary noise can't flicker a pose.
+// - Deliberate-extension detection (pointer/click) uses hysteresis latches
+//   with thresholds tuned for "clearly extended", independent of the legacy
+//   fist-curl constants.
+// - Rendered positions (cursor fingertip, pinch-drag midpoint) run through
+//   One Euro filters: still hand = heavy smoothing, fast hand = light lag.
+// Transition logic (clutch, one-shot click, zoom engagement) stays in the
+// unit-tested GestureStateMachine.
 
 import { GestureStateMachine } from "./gesture-state.js";
+import { OneEuroFilter, Ema, LatchedThreshold } from "./filters.js";
 
 // Palm-size -> scale mapping retained from the original prototype; now it
 // drives camera zoom ratios instead of mesh scale.
@@ -18,9 +30,33 @@ const PALM_SIZE_MAX = 0.28;
 const PALM_SIZE_SCALE_ONE = 0.1547368421;
 
 // Pinch = thumb tip to index tip distance relative to palm size, with
-// hysteresis so the boundary doesn't flicker between engaged/released.
+// hysteresis, PLUS the pose gate above (engage needs at most 1 of
+// middle/ring/pinky curled; an engaged pinch tolerates 2 before releasing).
 const PINCH_ON_RATIO = 0.34;
 const PINCH_OFF_RATIO = 0.46;
+const PINCH_ENGAGE_MAX_CURLED = 1;
+const PINCH_HOLD_MAX_CURLED = 2;
+
+// Legacy curl thresholds (tip-to-wrist vs pip-to-wrist ratio) — kept for
+// FIST detection only, applied to smoothed ratios.
+const CURL_RATIO_INDEX_MIDDLE_RING = 1.08;
+const CURL_RATIO_PINKY = 1.12;
+const CURL_RATIO_THUMB = 1.1;
+
+// Deliberate-extension latches for pointer/click poses. A clearly extended
+// finger reads ~1.5-1.9, half-relaxed ~1.1-1.3, curled below ~1.0 — so
+// "extended" arms above 1.3 and only releases below 1.1.
+const EXTEND_ON_RATIO = 1.3;
+const EXTEND_OFF_RATIO = 1.1;
+
+// EMA weight for classification scalars (~2-3 frames of smoothing at 30 fps).
+const SIGNAL_EMA_ALPHA = 0.45;
+
+// One Euro tuning: minCutoff sets resting smoothness, beta how quickly
+// smoothing yields to speed. Low beta = the requested "tiny delayed
+// movement" during fast motion instead of jitter.
+const CURSOR_FILTER_PARAMS = { minCutoff: 1.0, beta: 0.015, dCutoff: 1.0 };
+const PINCH_FILTER_PARAMS = { minCutoff: 1.2, beta: 0.02, dCutoff: 1.0 };
 
 // Radians of camera orbit per full-frame hand swipe; signs follow the
 // OrbitControls drag convention.
@@ -75,8 +111,40 @@ export function initGestures({ videoElement, statusBox, loadingText, handlers })
   });
 
   const machine = new GestureStateMachine();
-  let lastStatusKey = "";
 
+  // Per-signal conditioning state.
+  const ratioEma = {
+    index: new Ema(SIGNAL_EMA_ALPHA),
+    middle: new Ema(SIGNAL_EMA_ALPHA),
+    ring: new Ema(SIGNAL_EMA_ALPHA),
+    pinky: new Ema(SIGNAL_EMA_ALPHA),
+    thumb: new Ema(SIGNAL_EMA_ALPHA)
+  };
+  const pinchEma = new Ema(SIGNAL_EMA_ALPHA);
+  const opennessEma = new Ema(SIGNAL_EMA_ALPHA);
+  const extendLatch = {
+    index: new LatchedThreshold(EXTEND_ON_RATIO, EXTEND_OFF_RATIO),
+    middle: new LatchedThreshold(EXTEND_ON_RATIO, EXTEND_OFF_RATIO),
+    ring: new LatchedThreshold(EXTEND_ON_RATIO, EXTEND_OFF_RATIO),
+    pinky: new LatchedThreshold(EXTEND_ON_RATIO, EXTEND_OFF_RATIO)
+  };
+  const cursorFilterX = new OneEuroFilter(CURSOR_FILTER_PARAMS);
+  const cursorFilterY = new OneEuroFilter(CURSOR_FILTER_PARAMS);
+  const pinchFilterX = new OneEuroFilter(PINCH_FILTER_PARAMS);
+  const pinchFilterY = new OneEuroFilter(PINCH_FILTER_PARAMS);
+
+  const resetConditioning = () => {
+    for (const ema of Object.values(ratioEma)) ema.reset();
+    pinchEma.reset();
+    opennessEma.reset();
+    for (const latch of Object.values(extendLatch)) latch.reset(false);
+    cursorFilterX.reset();
+    cursorFilterY.reset();
+    pinchFilterX.reset();
+    pinchFilterY.reset();
+  };
+
+  let lastStatusKey = "";
   const setStatus = (key, html, active) => {
     if (key === lastStatusKey) return;
     lastStatusKey = key;
@@ -111,11 +179,14 @@ export function initGestures({ videoElement, statusBox, loadingText, handlers })
     }
 
     if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+      resetConditioning();
       for (const event of machine.step({ state: "none" })) dispatch(event);
       setStatus("nohand", "No hand detected. Place your hand in the camera view (bottom right).", false);
+      handlers.onDebug?.({ state: "none" });
       return;
     }
 
+    const t = performance.now() / 1000;
     const hand1 = results.multiHandLandmarks[0];
     const wrist = hand1[0];
     const thumbIP = hand1[3];
@@ -134,54 +205,102 @@ export function initGestures({ videoElement, statusBox, loadingText, handlers })
     const palmCenterX = (wrist.x + middleBase.x) * 0.5;
     const palmCenterY = (wrist.y + middleBase.y) * 0.5;
 
+    // Tip-vs-pip distance ratios (from the wrist; from the palm center for
+    // the thumb), EMA-smoothed before any threshold sees them.
+    const fromWrist = (lm) => Math.hypot(lm.x - wrist.x, lm.y - wrist.y);
+    const fromPalm = (lm) => Math.hypot(lm.x - palmCenterX, lm.y - palmCenterY);
+    const ratio = {
+      index: ratioEma.index.filter(fromWrist(indexTip) / Math.max(fromWrist(indexPip), 1e-6)),
+      middle: ratioEma.middle.filter(fromWrist(middleTip) / Math.max(fromWrist(middlePip), 1e-6)),
+      ring: ratioEma.ring.filter(fromWrist(ringTip) / Math.max(fromWrist(ringPip), 1e-6)),
+      pinky: ratioEma.pinky.filter(fromWrist(pinkyTip) / Math.max(fromWrist(pinkyPip), 1e-6)),
+      thumb: ratioEma.thumb.filter(fromPalm(thumbTip) / Math.max(fromPalm(thumbIP), 1e-6))
+    };
+
+    // Fist-style curl booleans (legacy thresholds, smoothed inputs).
+    const curled = {
+      index: ratio.index < CURL_RATIO_INDEX_MIDDLE_RING,
+      middle: ratio.middle < CURL_RATIO_INDEX_MIDDLE_RING,
+      ring: ratio.ring < CURL_RATIO_INDEX_MIDDLE_RING,
+      pinky: ratio.pinky < CURL_RATIO_PINKY,
+      thumb: ratio.thumb < CURL_RATIO_THUMB
+    };
+    const curledCount = [curled.index, curled.middle, curled.ring, curled.pinky].filter(Boolean).length;
+
     const fingertipSpread =
       (
-        Math.hypot(thumbTip.x - palmCenterX, thumbTip.y - palmCenterY) +
-        Math.hypot(indexTip.x - palmCenterX, indexTip.y - palmCenterY) +
-        Math.hypot(middleTip.x - palmCenterX, middleTip.y - palmCenterY) +
-        Math.hypot(ringTip.x - palmCenterX, ringTip.y - palmCenterY) +
-        Math.hypot(pinkyTip.x - palmCenterX, pinkyTip.y - palmCenterY)
+        fromPalm(thumbTip) + fromPalm(indexTip) + fromPalm(middleTip) +
+        fromPalm(ringTip) + fromPalm(pinkyTip)
       ) / 5;
+    const openness = opennessEma.filter(fingertipSpread / palmSize);
+    const isFist = openness < 1.72 && curled.thumb && curledCount >= 3;
 
-    const openness = fingertipSpread / palmSize;
+    // Deliberate-extension latches for pointer/click poses.
+    const extended = {
+      index: extendLatch.index.update(ratio.index),
+      middle: extendLatch.middle.update(ratio.middle),
+      ring: extendLatch.ring.update(ratio.ring),
+      pinky: extendLatch.pinky.update(ratio.pinky)
+    };
 
-    const thumbCurled =
-      Math.hypot(thumbTip.x - palmCenterX, thumbTip.y - palmCenterY) <
-      Math.hypot(thumbIP.x - palmCenterX, thumbIP.y - palmCenterY) * 1.1;
-    const indexCurled = Math.hypot(indexTip.x - wrist.x, indexTip.y - wrist.y) < Math.hypot(indexPip.x - wrist.x, indexPip.y - wrist.y) * 1.08;
-    const middleCurled = Math.hypot(middleTip.x - wrist.x, middleTip.y - wrist.y) < Math.hypot(middlePip.x - wrist.x, middlePip.y - wrist.y) * 1.08;
-    const ringCurled = Math.hypot(ringTip.x - wrist.x, ringTip.y - wrist.y) < Math.hypot(ringPip.x - wrist.x, ringPip.y - wrist.y) * 1.08;
-    const pinkyCurled = Math.hypot(pinkyTip.x - wrist.x, pinkyTip.y - wrist.y) < Math.hypot(pinkyPip.x - wrist.x, pinkyPip.y - wrist.y) * 1.12;
-    const curledCount = [indexCurled, middleCurled, ringCurled, pinkyCurled].filter(Boolean).length;
-    const isFist = openness < 1.72 && thumbCurled && curledCount >= 3;
-
-    const pinchRatio = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y) / palmSize;
+    // Pinch: thumb-index distance AND middle/ring/pinky not curled. A fist
+    // always curls >= 2 of those three, so fist and pinch are mutually
+    // exclusive regardless of check order.
+    const pinchRatioRaw = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y) / palmSize;
+    const pinchRatio = pinchEma.filter(pinchRatioRaw);
+    const othersCurled = [curled.middle, curled.ring, curled.pinky].filter(Boolean).length;
     const pinched = machine.state === "pinch"
-      ? pinchRatio < PINCH_OFF_RATIO
-      : pinchRatio < PINCH_ON_RATIO;
+      ? pinchRatio < PINCH_OFF_RATIO && othersCurled <= PINCH_HOLD_MAX_CURLED
+      : pinchRatio < PINCH_ON_RATIO && othersCurled <= PINCH_ENGAGE_MAX_CURLED;
 
     let state;
     if (pinched) state = "pinch";
     else if (isFist) state = "fist";
-    else if (!indexCurled && middleCurled && ringCurled && pinkyCurled) state = "pointer";
-    else if (!indexCurled && !middleCurled && ringCurled && pinkyCurled) state = "click";
+    else if (extended.index && !extended.middle && !extended.ring && !extended.pinky) state = "pointer";
+    else if (extended.index && extended.middle && !extended.ring && !extended.pinky) state = "click";
     else state = "idle";
 
     // Mirrored coordinates (the webcam preview is mirrored, so "hand moves
-    // right on screen" means x decreases in landmark space).
+    // right on screen" means x decreases in landmark space). The pinch-drag
+    // midpoint is One-Euro-filtered so orbit deltas don't carry jitter.
     const events = machine.step({
       state,
-      pinchX: 1 - (thumbTip.x + indexTip.x) * 0.5,
-      pinchY: (thumbTip.y + indexTip.y) * 0.5,
+      pinchX: state === "pinch" ? pinchFilterX.filter(1 - (thumbTip.x + indexTip.x) * 0.5, t) : 0,
+      pinchY: state === "pinch" ? pinchFilterY.filter((thumbTip.y + indexTip.y) * 0.5, t) : 0,
       palmScale: THREE.MathUtils.clamp(mapPalmSizeToScale(palmSize), MIN_GESTURE_SCALE, MAX_GESTURE_SCALE)
     });
     for (const event of events) dispatch(event);
+    if (state !== "pinch") {
+      pinchFilterX.reset();
+      pinchFilterY.reset();
+    }
 
     if (state === "pointer" || state === "click") {
-      handlers.onPointer((1 - indexTip.x) * window.innerWidth, indexTip.y * window.innerHeight);
+      const cx = cursorFilterX.filter(1 - indexTip.x, t);
+      const cy = cursorFilterY.filter(indexTip.y, t);
+      handlers.onPointer(cx * window.innerWidth, cy * window.innerHeight);
+    } else {
+      cursorFilterX.reset();
+      cursorFilterY.reset();
     }
 
     setStatus(state, STATUS_BY_STATE[state], state !== "idle");
+
+    handlers.onDebug?.({
+      state,
+      pinchRatio,
+      pinchRatioRaw,
+      othersCurled,
+      openness,
+      isFist,
+      thumbCurled: curled.thumb,
+      fingers: {
+        index: { ratio: ratio.index, extended: extended.index, curled: curled.index },
+        middle: { ratio: ratio.middle, extended: extended.middle, curled: curled.middle },
+        ring: { ratio: ratio.ring, extended: extended.ring, curled: curled.ring },
+        pinky: { ratio: ratio.pinky, extended: extended.pinky, curled: curled.pinky }
+      }
+    });
   });
 
   const cameraUtils = new window.Camera(videoElement, {

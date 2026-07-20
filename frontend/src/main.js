@@ -137,10 +137,28 @@ window.addEventListener("DOMContentLoaded", () => {
     if (cursor.active) updateHover();
   });
 
+  // Live detection readout for gesture tuning, gated behind ?debug.
+  const debugEl = document.getElementById("gesture-debug");
+  const debugEnabled = new URLSearchParams(location.search).has("debug");
+  if (debugEnabled) debugEl.classList.add("visible");
+  const formatDebug = (d) => {
+    if (d.state === "none") return "gesture: none (no hand)";
+    const finger = (name, f) =>
+      `${name} ${f.ratio.toFixed(2)} ${f.extended ? "EXT" : f.curled ? "curl" : "mid "}`;
+    return [
+      `gesture: ${d.state}`,
+      `pinch ${d.pinchRatio.toFixed(2)} (raw ${d.pinchRatioRaw.toFixed(2)})  m/r/p curled: ${d.othersCurled}`,
+      `${finger("idx", d.fingers.index)}  ${finger("mid", d.fingers.middle)}`,
+      `${finger("rng", d.fingers.ring)}  ${finger("pky", d.fingers.pinky)}`,
+      `openness ${d.openness.toFixed(2)}  thumb ${d.thumbCurled ? "curl" : "open"}  fist ${d.isFist ? "YES" : "no"}`
+    ].join("\n");
+  };
+
   const gestureHandlers = {
     onOrbitDelta: (deltaTheta, deltaPhi) => orbitCameraBy(deltaTheta, deltaPhi),
     onZoomStart: () => beginZoom(),
     onZoomRatio: (ratio) => setZoomRatio(ratio),
+    onDebug: debugEnabled ? (info) => { debugEl.textContent = formatDebug(info); } : undefined,
     onPointer: (x, y) => {
       cursor.x = x;
       cursor.y = y;
