@@ -45,14 +45,19 @@ const SIGNAL_EMA_ALPHA = 0.45;
 
 // One Euro tuning: minCutoff sets resting smoothness, beta how quickly
 // smoothing yields to speed. Low beta = the requested "tiny delayed
-// movement" during fast motion instead of jitter.
+// movement" during fast motion instead of jitter. Pan gets its own filter
+// pair (same initial values as pinch) so lateral-drag feel can be tuned
+// independently of orbit.
 const CURSOR_FILTER_PARAMS = { minCutoff: 1.0, beta: 0.015, dCutoff: 1.0 };
 const PINCH_FILTER_PARAMS = { minCutoff: 1.2, beta: 0.02, dCutoff: 1.0 };
+const PAN_FILTER_PARAMS = { minCutoff: 1.2, beta: 0.02, dCutoff: 1.0 };
 
 // Radians of camera orbit per full-frame hand swipe; signs follow the
-// OrbitControls drag convention.
+// OrbitControls drag convention. Pan speed is in view-widths per full-frame
+// swipe (the viz layer scales it by camera distance).
 const ORBIT_SPEED_X = 3.4;
 const ORBIT_SPEED_Y = 2.4;
+const PAN_SPEED = 1.6;
 
 function mapPalmSizeToScale(palmSize) {
   if (palmSize <= PALM_SIZE_SCALE_ONE) {
@@ -76,6 +81,7 @@ function mapPalmSizeToScale(palmSize) {
 
 const STATUS_BY_STATE = {
   pinch: "Pinch-drag: orbiting the camera. Release to hold, re-pinch anywhere to continue.",
+  gather: "Gathered pinch: move your hand left/right to pan. Release to hold.",
   fist: "Fist: zooming. Move your fist closer to zoom in, farther to zoom out.",
   pointer: "Pointing. Hover a cluster, then extend your middle finger to select it.",
   click: "Selected!",
@@ -112,6 +118,7 @@ export function initGestures({ videoElement, statusBox, loadingText, handlers })
     thumb: new Ema(SIGNAL_EMA_ALPHA)
   };
   const pinchEma = new Ema(SIGNAL_EMA_ALPHA);
+  const gatherEma = new Ema(SIGNAL_EMA_ALPHA);
   const opennessEma = new Ema(SIGNAL_EMA_ALPHA);
   const extendLatch = {
     index: new LatchedThreshold(EXTEND_ON_RATIO, EXTEND_OFF_RATIO),
@@ -123,16 +130,19 @@ export function initGestures({ videoElement, statusBox, loadingText, handlers })
   const cursorFilterY = new OneEuroFilter(CURSOR_FILTER_PARAMS);
   const pinchFilterX = new OneEuroFilter(PINCH_FILTER_PARAMS);
   const pinchFilterY = new OneEuroFilter(PINCH_FILTER_PARAMS);
+  const panFilterX = new OneEuroFilter(PAN_FILTER_PARAMS);
 
   const resetConditioning = () => {
     for (const ema of Object.values(ratioEma)) ema.reset();
     pinchEma.reset();
+    gatherEma.reset();
     opennessEma.reset();
     for (const latch of Object.values(extendLatch)) latch.reset(false);
     cursorFilterX.reset();
     cursorFilterY.reset();
     pinchFilterX.reset();
     pinchFilterY.reset();
+    panFilterX.reset();
   };
 
   let lastStatusKey = "";
@@ -143,10 +153,16 @@ export function initGestures({ videoElement, statusBox, loadingText, handlers })
     statusBox.innerHTML = html;
   };
 
+  let lastPanDx = 0; // most recent pan delta, surfaced in the debug readout
+
   const dispatch = (event) => {
     switch (event.type) {
       case "orbit":
         handlers.onOrbitDelta(-event.dx * ORBIT_SPEED_X, -event.dy * ORBIT_SPEED_Y);
+        break;
+      case "pan":
+        lastPanDx = event.dx;
+        handlers.onPanDelta(-event.dx * PAN_SPEED);
         break;
       case "zoomStart":
         handlers.onZoomStart();
@@ -234,9 +250,18 @@ export function initGestures({ videoElement, statusBox, loadingText, handlers })
     const pinchRatioRaw = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y) / palmSize;
     const pinchRatio = pinchEma.filter(pinchRatioRaw);
 
+    // Gather ("all-fingers pinch"): the LARGEST fingertip-to-thumb-tip
+    // distance — all four tips must converge on the thumb for it to drop.
+    const toThumb = (lm) => Math.hypot(lm.x - thumbTip.x, lm.y - thumbTip.y);
+    const gatherSpreadRaw =
+      Math.max(toThumb(indexTip), toThumb(middleTip), toThumb(ringTip), toThumb(pinkyTip)) / palmSize;
+    const gatherSpread = gatherEma.filter(gatherSpreadRaw);
+
     const state = classifyHandState({
       wasPinching: machine.state === "pinch",
+      wasGathering: machine.state === "gather",
       pinchRatio,
+      gatherSpread,
       curled,
       extended,
       openness
@@ -245,16 +270,21 @@ export function initGestures({ videoElement, statusBox, loadingText, handlers })
     // Mirrored coordinates (the webcam preview is mirrored, so "hand moves
     // right on screen" means x decreases in landmark space). The pinch-drag
     // midpoint is One-Euro-filtered so orbit deltas don't carry jitter.
+    lastPanDx = 0;
     const events = machine.step({
       state,
       pinchX: state === "pinch" ? pinchFilterX.filter(1 - (thumbTip.x + indexTip.x) * 0.5, t) : 0,
       pinchY: state === "pinch" ? pinchFilterY.filter((thumbTip.y + indexTip.y) * 0.5, t) : 0,
+      gatherX: state === "gather" ? panFilterX.filter(1 - palmCenterX, t) : 0,
       palmScale: THREE.MathUtils.clamp(mapPalmSizeToScale(palmSize), MIN_GESTURE_SCALE, MAX_GESTURE_SCALE)
     });
     for (const event of events) dispatch(event);
     if (state !== "pinch") {
       pinchFilterX.reset();
       pinchFilterY.reset();
+    }
+    if (state !== "gather") {
+      panFilterX.reset();
     }
 
     if (state === "pointer" || state === "click") {
@@ -272,6 +302,9 @@ export function initGestures({ videoElement, statusBox, loadingText, handlers })
       state,
       pinchRatio,
       pinchRatioRaw,
+      gatherSpread,
+      gatherSpreadRaw,
+      panDx: lastPanDx,
       othersCurled: [curled.middle, curled.ring, curled.pinky].filter(Boolean).length,
       openness,
       isFist: state === "fist",

@@ -1,6 +1,6 @@
 import {
   initViz, setShape, setBaseColor, loadDiagram, focusNode, clearFocus,
-  orbitCameraBy, beginZoom, setZoomRatio, setZoomDistance,
+  orbitCameraBy, panCameraBy, beginZoom, setZoomRatio, setZoomDistance,
   setHoveredNode, setFrameCallback
 } from "./viz/particles.js";
 import { initGestures } from "./gestures/hands.js";
@@ -148,6 +148,7 @@ window.addEventListener("DOMContentLoaded", () => {
     return [
       `gesture: ${d.state}`,
       `pinch ${d.pinchRatio.toFixed(2)} (raw ${d.pinchRatioRaw.toFixed(2)})  m/r/p curled: ${d.othersCurled}`,
+      `gather ${d.gatherSpread.toFixed(2)} (raw ${d.gatherSpreadRaw.toFixed(2)})  pan dx ${d.panDx >= 0 ? "+" : ""}${d.panDx.toFixed(3)}`,
       `${finger("idx", d.fingers.index)}  ${finger("mid", d.fingers.middle)}`,
       `${finger("rng", d.fingers.ring)}  ${finger("pky", d.fingers.pinky)}`,
       `openness ${d.openness.toFixed(2)}  thumb ${d.thumbCurled ? "curl" : "open"}  fist ${d.isFist ? "YES" : "no"}`
@@ -156,6 +157,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   const gestureHandlers = {
     onOrbitDelta: (deltaTheta, deltaPhi) => orbitCameraBy(deltaTheta, deltaPhi),
+    onPanDelta: (delta) => panCameraBy(delta),
     onZoomStart: () => beginZoom(),
     onZoomRatio: (ratio) => setZoomRatio(ratio),
     onDebug: debugEnabled ? (info) => { debugEl.textContent = formatDebug(info); } : undefined,
@@ -194,6 +196,7 @@ window.addEventListener("DOMContentLoaded", () => {
     focusNode: navigateTo,
     clearFocus: () => navigateTo(null),
     orbitBy: orbitCameraBy,
+    panBy: panCameraBy,
     zoomTo: setZoomDistance,
     pointer: gestureHandlers.onPointer,
     pointerEnd: gestureHandlers.onPointerEnd,

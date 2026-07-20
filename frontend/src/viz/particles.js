@@ -377,6 +377,19 @@ export function orbitCameraBy(deltaTheta, deltaPhi) {
   camera.position.copy(controls.target).add(_offset);
 }
 
+// Accumulate a gather-drag delta into a strictly horizontal pan: camera and
+// orbit target translate together along the camera's right vector, scaled by
+// the current distance so the pan feels consistent at any zoom level.
+export function panCameraBy(delta) {
+  cameraTween = null;
+  zoomEngageDistance = null;
+  zoomTargetDistance = null;
+  const dist = camera.position.distanceTo(controls.target);
+  _vec.setFromMatrixColumn(camera.matrix, 0).multiplyScalar(delta * dist);
+  camera.position.add(_vec);
+  controls.target.add(_vec);
+}
+
 // Fist zoom: capture the camera distance at engagement, then dolly by the
 // palm-scale ratio relative to that moment (clutched — re-fisting holds).
 export function beginZoom() {

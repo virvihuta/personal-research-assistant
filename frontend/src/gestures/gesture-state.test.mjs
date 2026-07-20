@@ -93,6 +93,36 @@ const types = (events) => events.map((e) => e.type);
   assert.ok(!types(m.step({ state: "click" })).includes("select"));
 }
 
+// --- Gather pan: clutch, dropout, strictly horizontal ------------------------
+{
+  const m = new GestureStateMachine();
+  // First gather frame: no delta.
+  assert.deepEqual(m.step({ state: "gather", gatherX: 0.5 }), []);
+  const ev = m.step({ state: "gather", gatherX: 0.58 });
+  assert.equal(ev.length, 1);
+  assert.equal(ev[0].type, "pan");
+  assert.ok(Math.abs(ev[0].dx - 0.08) < 1e-9);
+  assert.ok(!("dy" in ev[0]), "pan carries no vertical component");
+  // Release, move far, re-gather: first frame's delta discarded (no jump).
+  m.step({ state: "idle" });
+  assert.deepEqual(m.step({ state: "gather", gatherX: 0.05 }), []);
+  const resumed = m.step({ state: "gather", gatherX: 0.08 });
+  assert.ok(Math.abs(resumed[0].dx - 0.03) < 1e-9);
+  // Tracking dropout mid-gather: same discard on reacquisition.
+  m.step({ state: "none" });
+  assert.deepEqual(m.step({ state: "gather", gatherX: 0.9 }), []);
+}
+
+// --- Gather and pinch clutches don't cross-contaminate -----------------------
+{
+  const m = new GestureStateMachine();
+  m.step({ state: "pinch", pinchX: 0.5, pinchY: 0.5 });
+  // Switching pinch -> gather: gather's first frame emits no pan delta.
+  assert.deepEqual(m.step({ state: "gather", gatherX: 0.9 }), []);
+  // Switching back: pinch's first frame emits no orbit delta either.
+  assert.deepEqual(m.step({ state: "pinch", pinchX: 0.1, pinchY: 0.1 }), []);
+}
+
 // --- pointerEnd fires when leaving pointer/click poses ----------------------
 {
   const m = new GestureStateMachine();
